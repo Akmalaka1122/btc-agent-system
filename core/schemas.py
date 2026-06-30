@@ -42,6 +42,14 @@ class MarketReport(BaseModel):
         return self
 
 
+class PortfolioRating(str, Enum):
+    UP = "UP"
+    LEAN_UP = "LEAN_UP"
+    SKIP = "SKIP"
+    LEAN_DOWN = "LEAN_DOWN"
+    DOWN = "DOWN"
+
+
 class ResearchPlan(BaseModel):
     """Output Research Agent — internal bull/bear synthesis."""
     rating: PortfolioRating  # UP / LEAN_UP / SKIP / LEAN_DOWN / DOWN
@@ -70,14 +78,6 @@ class TraderProposal(BaseModel):
     time_horizon: str = "5m"
     market_odds: float
     expected_value: float
-
-
-class PortfolioRating(str, Enum):
-    UP = "UP"
-    LEAN_UP = "LEAN_UP"
-    SKIP = "SKIP"
-    LEAN_DOWN = "LEAN_DOWN"
-    DOWN = "DOWN"
 
 
 class PortfolioDecision(BaseModel):
