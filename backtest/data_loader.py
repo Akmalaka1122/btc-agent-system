@@ -84,8 +84,9 @@ async def fetch_ohlcv(
         # Convert types
         df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
         df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
-        for col in ["open", "high", "low", "close", "volume"]:
+        for col in ["open", "high", "low", "close", "volume", "quote_volume", "taker_buy_volume", "taker_buy_quote_volume"]:
             df[col] = df[col].astype(float)
+        df["trades"] = df["trades"].astype(int)
         
         logger.info(f"Total candles fetched: {len(df)}")
         return df
