@@ -1,18 +1,15 @@
-# BTC Agent System
+# BTC Agent System — Minimal
 
 > Multi-agent LLM system untuk Polymarket BTC 5-minute binary prediction markets
-
-13 specialized AI agents berkolaborasi dalam 6-wave pipeline untuk memprediksi arah BTC dalam 5 menit ke depan.
+> **5 agents, linear pipeline, same rigor, lower latency**
 
 ## Arsitektur
 
 ```
-WAVE 1 [parallel]  → 4 Analysts (Price, Sentiment, News, On-Chain)
-WAVE 2 [debate]    → Bull Researcher ⟷ Bear Researcher
-WAVE 3 [single]    → Research Manager
-WAVE 4 [single]    → Trader Agent
-WAVE 5 [debate]    → Aggressive ⟷ Conservative ⟷ Neutral Risk
-WAVE 6 [single]    → Portfolio Manager → FINAL: UP / DOWN / SKIP
+STEP 1 → Market & Sentiment Analyst (Vance)    — price + orderbook + funding/OI + fast-filter
+STEP 2 → Research Agent (Halvorsen)             — internal bull/bear synthesis
+STEP 3 → Trader Agent (Petrova)                 — EV check + entry timing
+STEP 4 → Risk & Portfolio Manager (Castellan)   — 3-lens sizing + final call, 2% hard cap
 ```
 
 Lihat `architecture.mermaid` untuk diagram lengkap.
@@ -22,28 +19,29 @@ Lihat `architecture.mermaid` untuk diagram lengkap.
 | # | Agent | Persona | Role |
 |---|-------|---------|------|
 | 0 | Orchestrator | Hale | Pipeline coordinator, timeout & verify gate |
-| 1 | BTC Price Analyst | Vance | Microstructure & technical analysis |
-| 2 | Sentiment Analyst | Mira | Multi-source sentiment aggregation |
-| 3 | News Analyst | Dax | Breaking news & event impact |
-| 4 | On-Chain Analyst | Soo-jin | On-chain metrics (honest about lag) |
-| 5 | Bull Researcher | Reyes | Steelman bull case |
-| 6 | Bear Researcher | Okafor | Risk-focused bear case |
-| 7 | Research Manager | Halvorsen | Debate judge, SKIP discipline |
-| 8 | Trader Agent | Petrova | Execution + EV check |
-| 9 | Aggressive Risk | Kade | Evidence-based aggression |
-| 10 | Conservative Risk | Whitfield | Capital preservation |
-| 11 | Neutral Risk | Asghar | Kelly-style sizing |
-| 12 | Portfolio Manager | Castellan | Final decision, hard cap 2% |
+| 1 | Market & Sentiment | Vance | All-in-one market reader (price + sentiment + fast-filter) |
+| 2 | Research | Halvorsen | Internal bull/bear debate, outputs ResearchPlan |
+| 3 | Trader | Petrova | Execution + EV check at current odds |
+| 4 | Risk & Portfolio | Castellan | 3-lens sizing (aggressive/conservative/neutral) + final decision |
+
+## Why Minimal?
+
+The original 13-agent system ran 6 waves with parallel analysts and multi-round debates. This version consolidates the same discipline into 4 linear steps because:
+
+- **Latency is risk** — in a 5-minute window, every extra API call eats into execution time
+- **Same rigor, less ceremony** — each agent internalizes the debate it used to outsource
+- **Simpler debugging** — linear pipeline means every failure is obvious
+- **Lower cost** — 4 LLM calls vs 12+ per cycle
 
 ## Setup
 
 ### 1. Install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/btc-agent-system.git
+git clone https://github.com/Akmalaka1122/btc-agent-system.git
 cd btc-agent-system
 python -m venv venv
-source venv/bin/activate   # Windows: venv\Scripts\activate
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
@@ -77,8 +75,6 @@ python main.py
 
 ## Output
 
-Setiap cycle menghasilkan:
-
 ```
 🟢 Cycle a1b2c3d4 — 14:32:15 UTC
 
@@ -90,10 +86,9 @@ Risk/Reward: 1.85
 
 Reasoning: Multi-domain convergence on bullish momentum...
 
-Key factors: RSI oversold bounce, exchange outflow spike, positive funding normalization
 Warnings: Thin liquidity at current price level
 
-Total latency: 87.3s | This is system output, NOT financial advice.
+Total latency: 45.2s | This is system output, NOT financial advice.
 ```
 
 ## ⚠️ Disiplin
@@ -102,7 +97,6 @@ Total latency: 87.3s | This is system output, NOT financial advice.
 - **Hard cap 2% risk** per trade (Portfolio Manager)
 - **SKIP adalah keputusan valid** — sistem dirancang untuk tidak overtrade
 - **Backtest dulu** sebelum pakai uang asli
-- **Tidak menjamin edge** — ini alat bantu keputusan, bukan mesin uang
 
 ## Tech Stack
 

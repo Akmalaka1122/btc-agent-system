@@ -1,5 +1,5 @@
 """
-agent.py — wrapper generik untuk satu agent.
+agent.py — wrapper generik untuk satu agent (minimal version).
 Load soul.md sebagai system prompt, panggil LLM via OpenAI-compatible API,
 optionally parse ke pydantic schema.
 
@@ -19,7 +19,7 @@ SOULS_DIR = Path(__file__).parent.parent / "souls"
 
 
 def _get_config() -> dict:
-    """Lazy config — reads .env every time, so values are always current."""
+    """Lazy config — reads .env every call, so values are always current."""
     return {
         "base_url": os.getenv("LLM_BASE_URL", "https://api.xpiki.com/v1"),
         "api_key": os.getenv("LLM_API_KEY", ""),
@@ -104,7 +104,7 @@ class Agent:
         if self.output_schema:
             try:
                 clean = raw_text.strip()
-                # Strip markdown code fences if present (handles ```json, ```JSON, etc.)
+                # Strip markdown code fences (handles ```json, ```JSON, etc.)
                 if clean.startswith("```"):
                     first_line_end = clean.index("\n") if "\n" in clean else len(clean)
                     clean = clean[first_line_end + 1:] if first_line_end < len(clean) else clean[3:]

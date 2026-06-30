@@ -1,6 +1,7 @@
 """
-schemas.py — semua schema output agent dalam satu tempat.
-Dipakai orchestrator buat verify step (cek structural validity sebelum lanjut ke wave berikutnya).
+schemas.py — schema untuk versi minimal (4 agent).
+Lebih sedikit dari versi 12-agent karena Sentiment+News+OnChain sudah dilebur
+jadi satu MarketReport, dan Risk debate + PM jadi satu PortfolioDecision.
 """
 from enum import Enum
 from typing import Optional
@@ -8,23 +9,33 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 
 
-class SentimentBand(str, Enum):
-    VERY_BEARISH = "VERY_BEARISH"
+class MarketBias(str, Enum):
     BEARISH = "BEARISH"
     MILDLY_BEARISH = "MILDLY_BEARISH"
     NEUTRAL = "NEUTRAL"
     MILDLY_BULLISH = "MILDLY_BULLISH"
     BULLISH = "BULLISH"
-    VERY_BULLISH = "VERY_BULLISH"
 
 
-class SentimentReport(BaseModel):
-    overall_sentiment: SentimentBand
+class MarketReport(BaseModel):
+    """Output Market & Sentiment Analyst — gabungan price + sentiment + fast-filter news/onchain."""
+    net_market_bias: MarketBias
     confidence: int = Field(ge=1, le=10)
-    key_catalysts: list[str]
-    source_breakdown: dict[str, float]
-    funding_rate_signal: str
-    liquidation_risk: str
+    technical_summary: str
+    positioning_summary: str  # funding/OI/liquidation read
+    fast_filter_flags: list[str]  # scheduled events / exchange flows / whale alerts
+    sentiment_tiebreaker: Optional[str] = None
+
+
+class ResearchPlan(BaseModel):
+    """Output Research Agent — internal bull/bear synthesis."""
+    rating: str  # UP / LEAN_UP / SKIP / LEAN_DOWN / DOWN
+    confidence: int = Field(ge=1, le=10)
+    bull_case: list[str]
+    bear_case: list[str]
+    strongest_counter_point: str
+    why_it_doesnt_change_call: str
+    reasoning: str
 
 
 class TraderAction(str, Enum):
@@ -46,15 +57,6 @@ class TraderProposal(BaseModel):
     expected_value: float
 
 
-class ResearchPlan(BaseModel):
-    rating: str  # UP / LEAN_UP / SKIP / LEAN_DOWN / DOWN
-    confidence: int = Field(ge=1, le=10)
-    reasoning: str
-    key_factors: list[str]
-    risk_warnings: list[str]
-    recommended_size: str  # SMALL / MEDIUM / LARGE / SKIP
-
-
 class PortfolioRating(str, Enum):
     UP = "UP"
     LEAN_UP = "LEAN_UP"
@@ -64,23 +66,24 @@ class PortfolioRating(str, Enum):
 
 
 class PortfolioDecision(BaseModel):
+    """Output Risk & Portfolio Manager — gabungan 3-way risk debate + final call."""
     rating: PortfolioRating
     confidence: int = Field(ge=1, le=10)
     position_size_usd: float
     expected_value: float
     risk_reward_ratio: float
+    aggressive_case: str
+    conservative_case: str
+    neutral_sizing_case: str
     reasoning: str
-    key_factors: list[str]
     warnings: list[str]
 
 
 class CycleLog(BaseModel):
-    """Output orchestrator per cycle — ini yang dikirim ke Telegram + disimpan ke DB."""
     cycle_id: str
     timestamp: datetime
-    wave_status: dict[str, str]          # e.g. {"wave1": "complete", "wave2": "degraded"}
+    step_status: dict[str, str]
     latency_seconds: dict[str, float]
-    verification_flags: list[str]        # output yg di-reject/re-dispatch
-    data_quality_flags: list[str]        # MISSING/STALE inputs
+    verification_flags: list[str]
     final_decision: Optional[PortfolioDecision] = None
     error: Optional[str] = None
