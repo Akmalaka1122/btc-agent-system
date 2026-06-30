@@ -5,6 +5,7 @@ Sama seperti versi penuh, tapi format pesan disesuaikan field CycleLog yang baru
 import asyncio
 import os
 import logging
+from pathlib import Path
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -13,12 +14,19 @@ from telegram.constants import ParseMode
 from core.orchestrator import Orchestrator
 from core.schemas import CycleLog
 
+
+def _escape_md(text: str) -> str:
+    """Escape Telegram Markdown special chars."""
+    for ch in ['_', '*', '[', ']', '(', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']:
+        text = text.replace(ch, f'\{ch}')
+    return text
+
 logger = logging.getLogger("telegram_bot")
 
 ADMIN_IDS = set(int(x) for x in os.getenv("TELEGRAM_ADMIN_IDS", "").split(",") if x.strip().isdigit())
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-STATE = {"running": True, "last_cycle": None, "history": []}
+STATE = {"running": True, "last_cycle": None, "history": [], "current_provider": None}
 
 
 def _is_admin(user_id: int) -> bool:
@@ -29,7 +37,7 @@ def format_cycle_message(log: CycleLog) -> str:
     if log.error or not log.final_decision:
         return (
             f"⚠️ *Cycle {log.cycle_id}* — {log.timestamp:%H:%M:%S} UTC\n"
-            f"Status: DEGRADED → SKIP — {log.error or 'unknown error'}\n"
+            f"Status: DEGRADED → SKIP — {_escape_md(log.error or 'unknown error')}\n"
             f"Verification flags: {len(log.verification_flags)}\n"
             f"Total latency: {log.latency_seconds.get('total', 0):.1f}s"
         )
@@ -44,8 +52,8 @@ def format_cycle_message(log: CycleLog) -> str:
         f"*Position size:* ${d.position_size_usd:,.2f}\n"
         f"*Expected value:* {d.expected_value:.4f}\n"
         f"*Risk/Reward:* {d.risk_reward_ratio:.2f}\n\n"
-        f"*Reasoning:*\n{d.reasoning[:500]}\n\n"
-        f"*Warnings:* {', '.join(d.warnings) if d.warnings else 'none'}\n\n"
+        f"*Reasoning:*\n{_escape_md(d.reasoning[:500])}\n\n"
+        f"*Warnings:* {_escape_md(', '.join(d.warnings)) if d.warnings else 'none'}\n\n"
         f"_Latency: {log.latency_seconds.get('total', 0):.1f}s | "
         f"This is system output, NOT financial advice._"
     )
@@ -110,6 +118,58 @@ async def _run_manual_cycle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Cycle failed: {e}")
 
 
+async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Switch LLM provider. Usage: /model zyloo or /model xiaomi or /model (show current)"""
+    from core.agent import PROVIDERS
+
+    args = context.args
+    if not args:
+        # Show current provider + available list
+        current = os.getenv("LLM_PROVIDER", "xiaomi")
+        provider_list = "\n".join(
+            f"  {'▸' if name == current else '○'} `{name}` — {p['default_model']}"
+            for name, p in PROVIDERS.items()
+        )
+        await update.message.reply_text(
+            f"*Current:* `{current}`\n\n"
+            f"*Available providers:*\n{provider_list}\n\n"
+            f"Usage: `/model <name>`\n"
+            f"Example: `/model zyloo`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    target = args[0].lower()
+    if target not in PROVIDERS:
+        await update.message.reply_text(
+            f"❌ `{target}` not found.\nAvailable: {', '.join(f'`{k}`' for k in PROVIDERS)}",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Update .env file
+    env_path = Path(__file__).parent.parent / ".env"
+    if env_path.exists():
+        content = env_path.read_text()
+        if "LLM_PROVIDER=" in content:
+            import re
+            content = re.sub(r"LLM_PROVIDER=.*", f"LLM_PROVIDER={target}", content)
+        else:
+            content += f"\nLLM_PROVIDER={target}\n"
+        env_path.write_text(content)
+
+    # Also set in-process env so next cycle picks it up immediately
+    os.environ["LLM_PROVIDER"] = target
+    STATE["current_provider"] = target
+
+    model_name = PROVIDERS[target]["default_model"]
+    await update.message.reply_text(
+        f"✅ Switched to *{target}* (`{model_name}`)\n"
+        f"Berlaku mulai cycle berikutnya.",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
 def _record_cycle(log: CycleLog):
     STATE["last_cycle"] = log
     STATE["history"].append(log)
@@ -137,4 +197,5 @@ def build_app(orchestrator: Orchestrator) -> Application:
     app.add_handler(CommandHandler("pause", cmd_pause))
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("run", cmd_run))
+    app.add_handler(CommandHandler("model", cmd_model))
     return app

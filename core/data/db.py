@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS daily_stats (
 
 CREATE TABLE IF NOT EXISTS setup_stats (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    setup_match TEXT NOT NULL,
+    setup_match TEXT,
     timestamp TEXT NOT NULL,
     pnl_usd REAL,
     resolved INTEGER DEFAULT 0

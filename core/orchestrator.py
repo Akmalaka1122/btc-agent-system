@@ -283,7 +283,7 @@ class Orchestrator:
                     rating=d.rating.value,
                     confidence=d.confidence,
                     position_size_usd=d.position_size_usd,
-                    setup_match=market.setup_match if market else "none",
+                    setup_match=(market.setup_match or "none") if market else "none",
                     confluence_total=market.confluence_total if market else 0,
                 )
             except Exception as e:

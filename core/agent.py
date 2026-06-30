@@ -31,8 +31,8 @@ PROVIDERS = {
         "sdk": "openai",
     },
     "xiaomi": {
-        "base_url": "https://api.xiaomi.com/v1",
-        "default_model": "mimo-v2.5",
+        "base_url": "https://api.xiaomimimo.com/v1",
+        "default_model": "mimo-v2.5-pro",
         "sdk": "openai",
     },
     "deepseek": {
@@ -50,6 +50,11 @@ PROVIDERS = {
         "default_model": "claude-sonnet-4-20250514",
         "sdk": "anthropic",
     },
+    "zyloo": {
+        "base_url": "https://api.zyloo.io/v1",
+        "default_model": "claude-opus-4-7",
+        "sdk": "openai",
+    },
     "openai-compatible": {
         # Generic fallback for Xpiki, Conduit, etc.
         "base_url": None,  # must be set via LLM_BASE_URL
@@ -60,17 +65,34 @@ PROVIDERS = {
 
 
 def _get_config() -> dict:
-    """Lazy config — reads .env every call, so values are always current."""
-    provider_name = os.getenv("LLM_PROVIDER", "openrouter").lower()
-    provider = PROVIDERS.get(provider_name, PROVIDERS["openai-compatible"])
+    """Lazy config — reads .env every call, so values are always current.
 
-    base_url = os.getenv("LLM_BASE_URL", provider["base_url"] or "")
-    model = os.getenv("LLM_MODEL", provider["default_model"] or "")
-    api_key = os.getenv("LLM_API_KEY", "")
+    Provider resolution:
+      - If LLM_PROVIDER matches a registered provider (not 'openai-compatible'),
+        the registry provides base_url and model. API key is read from
+        <PROVIDER>_API_KEY env var, falling back to LLM_API_KEY.
+      - If LLM_PROVIDER is 'openai-compatible' or unknown, LLM_BASE_URL,
+        LLM_API_KEY, and LLM_MODEL env vars are used directly.
+    """
+    provider_name = os.getenv("LLM_PROVIDER", "xiaomi").lower()
+    provider = PROVIDERS.get(provider_name)
+
+    if provider and provider_name != "openai-compatible":
+        # Named provider — use registry values, provider-specific API key
+        base_url = provider["base_url"]
+        model = os.getenv("LLM_MODEL") or provider["default_model"]
+        api_key_env = f"{provider_name.upper()}_API_KEY"
+        api_key = os.getenv(api_key_env) or os.getenv("LLM_API_KEY", "")
+    else:
+        # Generic openai-compatible — all from env vars
+        provider = PROVIDERS.get("openai-compatible", {})
+        base_url = os.getenv("LLM_BASE_URL", "")
+        model = os.getenv("LLM_MODEL", "")
+        api_key = os.getenv("LLM_API_KEY", "")
 
     return {
         "provider": provider_name,
-        "sdk": provider["sdk"],
+        "sdk": provider.get("sdk", "openai"),
         "base_url": base_url,
         "api_key": api_key,
         "model": model,
