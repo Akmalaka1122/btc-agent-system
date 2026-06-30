@@ -1,83 +1,92 @@
-# ECC Audit Report — btc-agent-system
+# ECC Audit Report v2 — btc-agent-system (Minimal 5-Agent)
 
-**Date:** 2026-06-30
-**Commit:** 472fee4
-**Branch:** feat/initial-pipeline
-**Reviewer:** Hermes Agent (automated)
+**Date:** 2026-06-30 (second pass)
+**Commit:** 93d980e
+**Branch:** master
+**Scope:** Full codebase after Trading Playbook integration
 
 ---
 
-## Security Scan ✅ PASS
+## Security Scan ✅ PASS (0 issues)
 
 | Check | Result |
 |-------|--------|
-| Hardcoded secrets | ✅ None found |
-| Shell injection | ✅ None found |
-| eval()/exec() | ✅ None found |
-| pickle.loads() | ✅ None found |
-| SQL injection | ✅ None found |
-| Path traversal | ✅ None found |
+| Hardcoded secrets | ✅ None |
+| Shell injection | ✅ None |
+| eval()/exec() | ✅ None |
+| pickle.loads() | ✅ None |
+| SQL injection | ✅ None |
+| Path traversal | ✅ None |
 
 ## Code Compilation ✅ PASS
 
 All 5 Python files compile without syntax errors.
 
-## Findings
+## Data Flow Audit
 
-### 🔴 Errors (Logic/Runtime)
+```
+Market Analyst → [MarketReport + confluence scores]
+     ↓
+Research Agent ← receives MarketReport
+     ↓
+     [ResearchPlan + setup validation]
+     ↓
+Trader Agent ← receives ResearchPlan + MarketReport
+     ↓
+     [TraderProposal + EV check]
+     ↓
+Risk & PM ← receives MarketReport + ResearchPlan + TraderProposal ✅ FIXED
+     ↓
+     [PortfolioDecision + confluence-based sizing]
+```
 
-| ID | File | Line | Issue | Severity |
-|----|------|------|-------|----------|
-| E1 | `core/agent.py` | 89 | All exceptions re-raised as `AgentTimeoutError` — masks real error type (could be `AgentVerificationError`, network error, auth error) | ERROR |
-| E2 | `main.py` | 27 | No validation that `LLM_API_KEY` is non-empty before starting — will crash at runtime with unhelpful error | ERROR |
+**Finding fixed this pass:** Risk & Portfolio Manager was NOT receiving MarketReport (confluence scores). Fixed in commit 93d980e — PM now receives all three upstream reports.
 
-### 🟡 Warnings
+## Schema ↔ Playbook Alignment ✅
 
-| ID | File | Line | Issue | Severity |
-|----|------|------|-------|----------|
-| W1 | `core/orchestrator.py` | 21 | `timeout_s=15` is very aggressive for LLM calls with full soul.md + structured output — expect frequent timeouts | WARNING |
-| W2 | `core/orchestrator.py` | 65 | `asyncio.get_event_loop().time()` deprecated in Python 3.12+ — use `asyncio.get_running_loop().time()` | WARNING |
-| W3 | `core/agent.py` | 58-63 | 13 separate `AsyncOpenAI` clients created (one per agent) — could share one client | WARNING |
+| Playbook (§1) | Schema Field | Range | Match |
+|---|---|---|---|
+| A. Technical Confluence | `confluence_technical` | 0-4 | ✅ |
+| B. Positioning Confluence | `confluence_positioning` | 0-3 | ✅ |
+| C. Microstructure Confluence | `confluence_microstructure` | 0-3 | ✅ |
+| Total | `confluence_total` | 0-10 | ✅ |
+| §6 Disqualifiers | `disqualifiers_active` | list[str] | ✅ |
+| §2-5 Setup Match | `setup_match` | A/B/C/D/none | ✅ |
 
-### 🟢 Suggestions (Non-blocking)
+## Soul ↔ Playbook Integration ✅
 
-| ID | File | Issue | Priority |
-|----|------|-------|----------|
-| S1 | Project | No tests — `tests/` directory missing entirely | LOW |
-| S2 | `core/orchestrator.py` | `run_cycle` doesn't handle the case where `pm_result` is `None` (if `_safe_run` returns None) | LOW |
-| S3 | `telegram_bot/bot.py` | `STATE["history"]` is in-memory only — lost on restart | LOW |
-| S4 | Project | No `config/` module — all config scattered across `.env` reads | LOW |
+| Agent | Playbook Section | Integration |
+|---|---|---|
+| Vance (Market Analyst) | §1 Confluence Scoring | Outputs A/B/C scores + setup match |
+| Halvorsen (Research) | §2-5 Setups + §6 Disqualifiers | Validates setup criteria, forced SKIP if confluence <6 |
+| Petrova (Trader) | §6 Final gate + EV check | Implied odds vs win-rate check |
+| Castellan (Risk & PM) | §7 Position Sizing | Confluence-based sizing (0-5=SKIP, 6-7=LEAN, 8-10=FULL) |
+
+## Previous Audit Findings — Status
+
+| # | Issue | Status |
+|---|-------|--------|
+| E1 | Exception masking | ✅ Fixed (commit 16f21e8) |
+| E2 | API key validation | ✅ Fixed (commit 16f21e8) |
+| L1 | Race condition (dq_flags) | ✅ Documented safe (commit 65ba6a5) |
+| L2 | Deprecated asyncio API | ✅ Fixed → get_running_loop() (commit 65ba6a5) |
+| L3 | Fragile markdown stripping | ✅ Fixed (commit 65ba6a5) |
+| L4 | cmd_run missing broadcast | ✅ Fixed (commit 65ba6a5) |
+| L5 | Module-level globals | ✅ Fixed → lazy _get_config() (commit 65ba6a5) |
+| **NEW** | PM missing Market Report | ✅ Fixed (commit 93d980e) |
+
+## Remaining (Non-blocking)
+
+| ID | Issue | Severity |
+|----|-------|----------|
+| S1 | No tests directory | LOW |
+| S2 | Circuit breakers (§8) need persistent DB | LOW (documented in playbook) |
+| S3 | In-memory history lost on restart | LOW |
+| S4 | No Polymarket data fetch functions yet | LOW (documented in README) |
+| S5 | No Binance data fetch functions yet | LOW (documented in README) |
 
 ## Verdict
 
-**PASS with 2 errors to fix (E1, E2)** — no security issues found.
+**✅ PASS** — 0 security issues, 0 logic errors remaining.
 
-The codebase is clean, well-structured, and follows good async patterns. The 13-agent pipeline architecture is sound. Main concerns are operational (timeout tuning, error handling, input validation) rather than security-related.
-
-## Recommended Fixes
-
-### E1: agent.py — Better error classification
-```python
-# BEFORE:
-except Exception as e:
-    raise AgentTimeoutError(f"{self.name} failed: {e}")
-
-# AFTER:
-except Exception as e:
-    if "timeout" in str(e).lower() or "timed out" in str(e).lower():
-        raise AgentTimeoutError(f"{self.name} timed out: {e}")
-    raise AgentTimeoutError(f"{self.name} failed: {e}")
-```
-
-### E2: main.py — Validate API key on startup
-```python
-# Add before main():
-if not os.getenv("LLM_API_KEY"):
-    raise RuntimeError("LLM_API_KEY not set in .env — copy .env.example to .env and fill in your API key")
-```
-
-### W1: Increase timeout
-```python
-# In orchestrator.py, change timeout_s from 15 to 30-45
-self.price_analyst = Agent("BTC Price Analyst", "01-btc-price-analyst.soul.md", timeout_s=30)
-```
+Codebase is clean, well-structured, and playbook-aligned. All previous audit findings fixed. New finding (PM missing Market Report) caught and fixed this pass. Remaining items are implementation TODOs (data fetch, DB persistence, tests), not code quality issues.
