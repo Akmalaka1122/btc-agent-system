@@ -28,6 +28,12 @@ logger = logging.getLogger("main")
 CYCLE_INTERVAL = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))  # default 5 menit
 PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
 
+if not os.getenv("LLM_API_KEY"):
+    raise RuntimeError(
+        "LLM_API_KEY not set. Copy .env.example to .env and fill in your API key.\n"
+        "See .env.example for provider options (Xpiki, UniModel, OpenAI, etc.)"
+    )
+
 
 async def scheduled_cycle(orchestrator: Orchestrator, app):
     if not STATE["running"]:

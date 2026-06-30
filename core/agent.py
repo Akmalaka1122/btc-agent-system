@@ -87,7 +87,10 @@ class Agent:
                 ],
             )
         except Exception as e:
-            raise AgentTimeoutError(f"{self.name} failed: {e}")
+            err_msg = str(e).lower()
+            if "timeout" in err_msg or "timed out" in err_msg:
+                raise AgentTimeoutError(f"{self.name} timed out after {self.timeout_s}s: {e}")
+            raise AgentTimeoutError(f"{self.name} API call failed: {e}")
 
         raw_text = response.choices[0].message.content or ""
 

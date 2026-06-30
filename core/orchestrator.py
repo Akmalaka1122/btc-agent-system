@@ -18,30 +18,30 @@ logger = logging.getLogger("orchestrator")
 class Orchestrator:
     def __init__(self):
         # Wave 1 — parallel analysts
-        self.price_analyst = Agent("BTC Price Analyst", "01-btc-price-analyst.soul.md", timeout_s=15)
+        self.price_analyst = Agent("BTC Price Analyst", "01-btc-price-analyst.soul.md", timeout_s=30)
         self.sentiment_analyst = Agent("Sentiment Analyst", "02-sentiment-analyst.soul.md",
-                                        output_schema=SentimentReport, timeout_s=15)
-        self.news_analyst = Agent("News Analyst", "03-news-analyst.soul.md", timeout_s=15)
-        self.onchain_analyst = Agent("On-Chain Analyst", "04-onchain-analyst.soul.md", timeout_s=15)
+                                        output_schema=SentimentReport, timeout_s=30)
+        self.news_analyst = Agent("News Analyst", "03-news-analyst.soul.md", timeout_s=30)
+        self.onchain_analyst = Agent("On-Chain Analyst", "04-onchain-analyst.soul.md", timeout_s=30)
 
         # Wave 2 — debate
-        self.bull = Agent("Bull Researcher", "05-bull-researcher.soul.md", timeout_s=15)
-        self.bear = Agent("Bear Researcher", "06-bear-researcher.soul.md", timeout_s=15)
+        self.bull = Agent("Bull Researcher", "05-bull-researcher.soul.md", timeout_s=30)
+        self.bear = Agent("Bear Researcher", "06-bear-researcher.soul.md", timeout_s=30)
 
         # Wave 3-4
         self.research_manager = Agent("Research Manager", "07-research-manager.soul.md",
-                                       output_schema=ResearchPlan, timeout_s=15)
+                                       output_schema=ResearchPlan, timeout_s=30)
         self.trader = Agent("Trader Agent", "08-trader-agent.soul.md",
-                             output_schema=TraderProposal, timeout_s=15)
+                             output_schema=TraderProposal, timeout_s=30)
 
         # Wave 5 — risk debate
-        self.risk_aggressive = Agent("Aggressive Risk", "09-aggressive-risk-analyst.soul.md", timeout_s=15)
-        self.risk_conservative = Agent("Conservative Risk", "10-conservative-risk-analyst.soul.md", timeout_s=15)
-        self.risk_neutral = Agent("Neutral Risk", "11-neutral-risk-analyst.soul.md", timeout_s=15)
+        self.risk_aggressive = Agent("Aggressive Risk", "09-aggressive-risk-analyst.soul.md", timeout_s=30)
+        self.risk_conservative = Agent("Conservative Risk", "10-conservative-risk-analyst.soul.md", timeout_s=30)
+        self.risk_neutral = Agent("Neutral Risk", "11-neutral-risk-analyst.soul.md", timeout_s=30)
 
         # Wave 6
         self.portfolio_manager = Agent("Portfolio Manager", "12-portfolio-manager.soul.md",
-                                        output_schema=PortfolioDecision, timeout_s=15)
+                                        output_schema=PortfolioDecision, timeout_s=30)
 
     async def _safe_run(self, agent: Agent, prompt: str, flags: list, max_retries: int = 1):
         """Wrapper verify-gate: retry sekali kalau timeout/verification fail, else flag degraded."""
