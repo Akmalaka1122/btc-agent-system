@@ -88,7 +88,9 @@ class Orchestrator:
         s4 = asyncio.get_running_loop().time()
         pm_result = await self._safe_run(
             self.risk_pm,
-            f"Research Plan:\n{research_result['raw']}\n\nTrader Proposal:\n{trader_result['raw']}",
+            f"Market & Sentiment Report:\n{market_result['raw']}\n\n"
+            f"Research Plan:\n{research_result['raw']}\n\n"
+            f"Trader Proposal:\n{trader_result['raw']}",
             flags
         )
         latency["step4_risk_pm"] = asyncio.get_running_loop().time() - s4
