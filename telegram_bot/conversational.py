@@ -164,19 +164,58 @@ class ConversationalHandler:
     
     async def show_losses(self) -> str:
         """Show recent losing trades."""
-        # TODO: Requires outcome tracking (Phase 4)
-        return ("📊 **Losses tracking coming soon!**\n\n"
-                "This feature requires outcome tracking (Phase 4: Self-Correction).\n"
-                "Once we track actual outcomes (5min later), losses will be available here.\n\n"
-                "For now, use `/history` to see all decisions.")
+        from core.self_correction import get_outcome_tracker, get_lesson_generator
+        
+        tracker = get_outcome_tracker()
+        generator = get_lesson_generator()
+        
+        stats = tracker.get_stats()
+        
+        if stats["total_trades"] == 0 and stats["unresolved"] == 0:
+            return "📊 Belum ada trade outcomes yang di-track."
+        
+        response = f"**📊 Trade Outcomes:**\n\n"
+        response += f"✅ **Wins:** {stats['wins']}\n"
+        response += f"❌ **Losses:** {stats['losses']}\n"
+        response += f"📈 **Win Rate:** {stats['win_rate']:.1%}\n"
+        response += f"💰 **Total PnL:** ${stats['total_pnl']:+,.2f}\n"
+        response += f"⏳ **Unresolved:** {stats['unresolved']}\n\n"
+        
+        # Show loss patterns
+        patterns = generator.get_loss_patterns()
+        if patterns:
+            response += "**Loss Patterns:**\n"
+            for pattern, count in patterns.items():
+                response += f"  • {pattern}: {count}x\n"
+        
+        return response
     
     async def show_wins(self) -> str:
-        """Show recent winning trades."""
-        # TODO: Requires outcome tracking (Phase 4)
-        return ("🎯 **Wins tracking coming soon!**\n\n"
-                "This feature requires outcome tracking (Phase 4: Self-Correction).\n"
-                "Once we track actual outcomes (5min later), wins will be available here.\n\n"
-                "For now, use `/history` to see all decisions.")
+        """Show recent winning trades and lessons."""
+        from core.self_correction import get_outcome_tracker, get_lesson_generator
+        
+        tracker = get_outcome_tracker()
+        generator = get_lesson_generator()
+        
+        stats = tracker.get_stats()
+        lessons = generator.get_recent_lessons(limit=3)
+        
+        if stats["total_trades"] == 0:
+            return "🎯 Belum ada trade outcomes yang di-track."
+        
+        response = f"**🎯 Win Analysis:**\n\n"
+        response += f"✅ **Wins:** {stats['wins']}/{stats['total_trades']} ({stats['win_rate']:.1%})\n"
+        response += f"💰 **Total PnL:** ${stats['total_pnl']:+,.2f}\n"
+        response += f"📊 **Avg PnL:** ${stats['avg_pnl']:+,.2f}\n\n"
+        
+        if lessons:
+            response += "**Recent Lessons:**\n"
+            for l in lessons:
+                emoji = "✅" if l["outcome"] == "win" else "❌"
+                response += f"  {emoji} [{l['category']}] {l['analysis'][:80]}...\n"
+                response += f"    → {l['adjustment'][:80]}\n\n"
+        
+        return response
     
     async def show_recent(self) -> str:
         """Show recent decisions."""
@@ -240,7 +279,7 @@ You can ask me naturally in English or Indonesian:
 • "why down?" / "kenapa down?"
 • "show recent" / "tampilkan terakhir"
 
-**Analysis (coming soon):**
+**Analysis:**
 • "show mistakes" / "tampilkan loss"
 • "show wins" / "tampilkan profit"
 • "what did you learn?" / "apa yang dipelajari?"
