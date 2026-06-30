@@ -1,0 +1,10 @@
+{
+  "symbol": "BTCUSDT",
+  "interval": "5m",
+  "start_date": "2026-06-28",
+  "end_date": "2026-06-30",
+  "ohlcv_rows": 577,
+  "funding_rows": 7,
+  "oi_rows": 500,
+  "downloaded_at": "2026-06-30T15:02:05.895908+00:00"
+}
