@@ -212,6 +212,15 @@ class Orchestrator:
         # STEP 0.5: Fetch real market data if no context provided
         if market_context is None:
             market_context = await self._fetch_market_data()
+        
+        # STEP 0.6: Inject decision history for consistency (Phase 3: Meridian)
+        from core.memory_injection import inject_into_market_context
+        
+        try:
+            market_context = inject_into_market_context(market_context, limit=3)
+            logger.debug("Memory injection: Recent decisions injected into context")
+        except Exception as e:
+            logger.warning(f"Memory injection failed (continuing without): {e}")
 
         # STEP 1: Market & Sentiment Analyst
         s1 = asyncio.get_running_loop().time()
