@@ -2,6 +2,7 @@
 bot.py — Telegram integration untuk versi minimal (4 agent).
 Sama seperti versi penuh, tapi format pesan disesuaikan field CycleLog yang baru.
 """
+import asyncio
 import os
 import logging
 
@@ -88,11 +89,25 @@ async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_admin(update.effective_user.id):
         await update.message.reply_text("Admin only.")
         return
-    await update.message.reply_text("Menjalankan 1 cycle manual...")
-    orchestrator: Orchestrator = context.bot_data["orchestrator"]
-    log = await orchestrator.run_cycle("Manual trigger — fetch current BTC market data and run analysis.")
-    _record_cycle(log)
-    await update.message.reply_text(format_cycle_message(log), parse_mode=ParseMode.MARKDOWN)
+    await update.message.reply_text("⏳ Menjalankan 1 cycle manual... (hasil dikirim otomatis)")
+    asyncio.create_task(_run_manual_cycle(update, context))
+
+
+async def _run_manual_cycle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        orchestrator: Orchestrator = context.bot_data["orchestrator"]
+        log = await orchestrator.run_cycle("Manual trigger — fetch current BTC market data and run analysis.")
+        _record_cycle(log)
+        await update.message.reply_text(format_cycle_message(log), parse_mode=ParseMode.MARKDOWN)
+        if CHAT_ID and update.effective_chat and str(update.effective_chat.id) != str(CHAT_ID):
+            try:
+                await context.bot.send_message(
+                    chat_id=CHAT_ID, text=format_cycle_message(log), parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                logger.error(f"Failed to broadcast manual run: {e}")
+    except Exception as e:
+        logger.exception("Manual cycle failed")
+        await update.message.reply_text(f"❌ Cycle failed: {e}")
 
 
 def _record_cycle(log: CycleLog):

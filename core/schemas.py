@@ -5,7 +5,7 @@ jadi satu MarketReport, dan Risk debate + PM jadi satu PortfolioDecision.
 """
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from datetime import datetime
 
 
@@ -33,10 +33,18 @@ class MarketReport(BaseModel):
     disqualifiers_active: list[str] = Field(default_factory=list, description="Active disqualifiers from Playbook §6")
     setup_match: Optional[str] = Field(default=None, description="Which playbook setup matches: A/B/C/D/none")
 
+    @model_validator(mode="after")
+    def validate_confluence_total(self):
+        expected = self.confluence_technical + self.confluence_positioning + self.confluence_microstructure
+        if self.confluence_total != expected:
+            # Auto-correct instead of rejecting (LLM might miscalculate)
+            self.confluence_total = expected
+        return self
+
 
 class ResearchPlan(BaseModel):
     """Output Research Agent — internal bull/bear synthesis."""
-    rating: str  # UP / LEAN_UP / SKIP / LEAN_DOWN / DOWN
+    rating: PortfolioRating  # UP / LEAN_UP / SKIP / LEAN_DOWN / DOWN
     confidence: int = Field(ge=1, le=10)
     bull_case: list[str]
     bear_case: list[str]

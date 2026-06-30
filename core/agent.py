@@ -98,6 +98,8 @@ class Agent:
                 raise AgentTimeoutError(f"{self.name} timed out after {self.timeout_s}s: {e}")
             raise AgentTimeoutError(f"{self.name} API call failed: {e}")
 
+        if not response.choices:
+            raise AgentVerificationError(f"{self.name} returned empty response (no choices)")
         raw_text = response.choices[0].message.content or ""
 
         parsed = None
