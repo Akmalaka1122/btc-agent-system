@@ -72,7 +72,13 @@ class ConversationalHandler:
             return self.show_help()
         
         else:
-            return self.not_understood(message)
+            # LLM-powered fallback — general chat with trading context
+            from telegram_bot.chat_agent import chat
+            try:
+                return await chat(message)
+            except Exception as e:
+                logger.error(f"Chat fallback failed: {e}")
+                return self.not_understood(message)
     
     async def explain_last_skip(self) -> str:
         """Explain why the last SKIP decision was made."""
