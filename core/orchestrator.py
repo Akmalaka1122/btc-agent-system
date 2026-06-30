@@ -401,8 +401,23 @@ class Orchestrator:
     def _degraded_log(self, cycle_id, t0, step_status, latency, flags, error_msg) -> CycleLog:
         total = (datetime.now(timezone.utc) - t0).total_seconds()
         latency["total"] = total
-        return CycleLog(
+        log = CycleLog(
             cycle_id=cycle_id, timestamp=t0, step_status=step_status,
             latency_seconds=latency, verification_flags=flags,
             final_decision=None, error=error_msg,
         )
+        
+        # Log degraded/skip decisions too (so they appear in decision log + Telegram)
+        from core.decision_log import append_decision
+        try:
+            append_decision(
+                log,
+                summary=f"SKIP: {error_msg[:100]}",
+                reason=error_msg,
+                risks=["No position taken"],
+                rejected=[],
+            )
+        except Exception as e:
+            logger.warning(f"Decision log (degraded) failed: {e}")
+        
+        return log
