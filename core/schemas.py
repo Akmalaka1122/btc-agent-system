@@ -25,6 +25,13 @@ class MarketReport(BaseModel):
     positioning_summary: str  # funding/OI/liquidation read
     fast_filter_flags: list[str]  # scheduled events / exchange flows / whale alerts
     sentiment_tiebreaker: Optional[str] = None
+    # Confluence scoring (from Trading Playbook §1)
+    confluence_technical: int = Field(ge=0, le=4, description="A. Technical confluence score")
+    confluence_positioning: int = Field(ge=0, le=3, description="B. Positioning confluence score")
+    confluence_microstructure: int = Field(ge=0, le=3, description="C. Microstructure confluence score")
+    confluence_total: int = Field(ge=0, le=10, description="Total confluence score (A+B+C)")
+    disqualifiers_active: list[str] = Field(default_factory=list, description="Active disqualifiers from Playbook §6")
+    setup_match: Optional[str] = Field(default=None, description="Which playbook setup matches: A/B/C/D/none")
 
 
 class ResearchPlan(BaseModel):
