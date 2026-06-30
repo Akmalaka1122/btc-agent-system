@@ -209,12 +209,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     
     user_id = update.message.from_user.id if update.message.from_user else None
-    
-    # Only respond to admin users
-    if user_id not in ADMIN_IDS:
-        return
-    
     message = update.message.text.strip()
+    
+    logger.info(f"📩 Message from {user_id}: {message[:50]}")
     
     # Import here to avoid circular dependency
     from telegram_bot.conversational import handle_message
@@ -222,11 +219,15 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         response = await handle_message(message, user_id)
         await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
+        logger.info(f"📤 Reply sent to {user_id}")
     except Exception as e:
         logger.error(f"Conversational handler error: {e}")
-        await update.message.reply_text(
-            f"❌ Error processing query: {str(e)[:100]}"
-        )
+        try:
+            await update.message.reply_text(
+                f"❌ Error: {str(e)[:100]}"
+            )
+        except Exception:
+            pass
 
 
 def build_app(orchestrator: Orchestrator) -> Application:
