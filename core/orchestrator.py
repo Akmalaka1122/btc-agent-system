@@ -15,6 +15,7 @@ After each cycle:
 """
 import asyncio
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -222,6 +223,28 @@ class Orchestrator:
             return self._degraded_log(cycle_id, t0, step_status, latency, flags,
                                        "Market analyst failed — cannot proceed safely")
 
+        # STEP 1.5: Enforce Trading Playbook gates (confluence threshold + disqualifiers)
+        market = market_result["parsed"]
+        
+        # Gate 1: Confluence threshold (Playbook §7 — confluence <6 = forced SKIP)
+        if market.confluence_total < 6:
+            logger.info(f"Cycle {cycle_id} FORCED SKIP: confluence {market.confluence_total}/10 < threshold 6")
+            return self._degraded_log(
+                cycle_id, t0, step_status, latency,
+                [f"PLAYBOOK GATE: Confluence {market.confluence_total}/10 below threshold 6 (§7)"],
+                f"FORCED SKIP: Confluence score {market.confluence_total}/10 insufficient (threshold: 6)"
+            )
+        
+        # Gate 2: Disqualifiers (Playbook §6 — any active disqualifier = forced SKIP)
+        if market.disqualifiers_active:
+            disq_str = ", ".join(market.disqualifiers_active)
+            logger.info(f"Cycle {cycle_id} FORCED SKIP: disqualifiers active — {disq_str}")
+            return self._degraded_log(
+                cycle_id, t0, step_status, latency,
+                [f"PLAYBOOK GATE: Disqualifiers active — {disq_str} (§6)"],
+                f"FORCED SKIP: Active disqualifiers — {disq_str}"
+            )
+
         # STEP 2: Research Agent
         s2 = asyncio.get_running_loop().time()
         research_result = await self._safe_run(
@@ -258,6 +281,22 @@ class Orchestrator:
         )
         latency["step4_risk_pm"] = asyncio.get_running_loop().time() - s4
         step_status["step4_risk_pm"] = "complete" if pm_result["parsed"] else "degraded"
+
+        # STEP 4.5: Enforce 2% position size cap (Playbook §7 hard cap)
+        if pm_result["parsed"]:
+            pm_decision = pm_result["parsed"]
+            # TODO: Get account_balance from config/DB instead of hardcoded
+            account_balance = float(os.getenv("ACCOUNT_BALANCE_USD", "10000"))
+            max_position = account_balance * 0.02
+            
+            if pm_decision.position_size_usd > max_position:
+                original_size = pm_decision.position_size_usd
+                pm_decision.position_size_usd = max_position
+                flags.append(
+                    f"POSITION CAPPED: ${original_size:.2f} → ${max_position:.2f} "
+                    f"(2% hard cap on ${account_balance:,.0f} account)"
+                )
+                logger.info(f"Cycle {cycle_id} position size capped: ${original_size:.2f} → ${max_position:.2f}")
 
         total = (datetime.now(timezone.utc) - t0).total_seconds()
         latency["total"] = total

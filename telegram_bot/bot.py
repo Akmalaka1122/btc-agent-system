@@ -121,6 +121,7 @@ async def _run_manual_cycle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Switch LLM provider. Usage: /model zyloo or /model xiaomi or /model (show current)"""
     from core.agent import PROVIDERS
+    import re
 
     args = context.args
     if not args:
@@ -147,12 +148,28 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Update .env file
+    # Security: Validate target string (defense-in-depth, even though whitelist checked above)
+    if not re.match(r'^[a-z0-9_-]+$', target):
+        await update.message.reply_text(
+            f"❌ Invalid provider name format: `{target}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        logger.warning(f"Blocked invalid provider name: {target}")
+        return
+
+    # Update .env file with backup
     env_path = Path(__file__).parent.parent / ".env"
     if env_path.exists():
+        # Create backup before modifying
+        backup_path = env_path.with_suffix('.env.backup')
+        try:
+            import shutil
+            shutil.copy2(env_path, backup_path)
+        except Exception as e:
+            logger.warning(f"Failed to create .env backup: {e}")
+        
         content = env_path.read_text()
         if "LLM_PROVIDER=" in content:
-            import re
             content = re.sub(r"LLM_PROVIDER=.*", f"LLM_PROVIDER={target}", content)
         else:
             content += f"\nLLM_PROVIDER={target}\n"
