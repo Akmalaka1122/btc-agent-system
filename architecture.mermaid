@@ -1,0 +1,88 @@
+flowchart TB
+    subgraph EXT["External Data Sources"]
+        BIN[Binance/Coinbase API]
+        TW[Twitter/Reddit API]
+        NEWS[News/Macro API]
+        CHAIN[On-chain APIs]
+        POLY[Polymarket API odds/liquidity]
+    end
+
+    subgraph CORE["Orchestrator Core - Python asyncio"]
+        ORC[Orchestrator / Hale<br/>Decompose-Dispatch-Verify]
+        SCHED[Scheduler<br/>triggers every 5-min window]
+    end
+
+    subgraph W1["Wave 1: Analysts (parallel)"]
+        A1[BTC Price Analyst]
+        A2[Sentiment Analyst]
+        A3[News Analyst]
+        A4[On-Chain Analyst]
+    end
+
+    subgraph W2["Wave 2: Research Debate (sequential)"]
+        B1[Bull Researcher]
+        B2[Bear Researcher]
+    end
+
+    subgraph W3["Wave 3-4: Manager + Trader"]
+        RM[Research Manager]
+        TR[Trader Agent]
+    end
+
+    subgraph W5["Wave 5: Risk Debate (sequential)"]
+        R1[Aggressive Risk]
+        R2[Conservative Risk]
+        R3[Neutral Risk]
+    end
+
+    subgraph W6["Wave 6: Final Decision"]
+        PM[Portfolio Manager]
+    end
+
+    subgraph OUT["Output Layer"]
+        DB[(SQLite/Postgres<br/>cycle logs + decisions)]
+        TG[Telegram Bot]
+        EXEC[Execution Module<br/>Polymarket order - optional/manual]
+    end
+
+    subgraph TGUSERS["Telegram"]
+        USER1[User chat: alerts]
+        GROUP[Group chat: team monitoring]
+        CMD["/status /pause /resume /history"]
+    end
+
+    SCHED --> ORC
+    BIN --> A1
+    TW --> A2
+    NEWS --> A3
+    CHAIN --> A4
+
+    ORC -->|dispatch parallel| A1 & A2 & A3 & A4
+    A1 & A2 & A3 & A4 -->|verified reports| ORC
+    ORC -->|dispatch| B1
+    B1 <--> B2
+    B2 -->|debate history| ORC
+    ORC --> RM
+    RM --> TR
+    POLY --> TR
+    TR --> ORC
+    ORC -->|dispatch| R1
+    R1 <--> R2
+    R2 <--> R3
+    R3 --> ORC
+    ORC --> PM
+    PM --> DB
+    PM --> TG
+    DB --> TG
+
+    TG --> USER1
+    TG --> GROUP
+    CMD --> ORC
+
+    PM -.optional manual confirm.-> EXEC
+    EXEC -.-> POLY
+
+    style ORC fill:#c0392b,color:#fff
+    style PM fill:#c0392b,color:#fff
+    style TG fill:#2980b9,color:#fff
+    style DB fill:#7f8c8d,color:#fff
