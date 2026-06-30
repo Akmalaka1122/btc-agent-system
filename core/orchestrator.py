@@ -7,7 +7,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from core.agent import Agent, AgentTimeoutError, AgentVerificationError
+from core.agent import Agent, AgentTimeoutError, AgentAPIError, AgentVerificationError
 from core.schemas import MarketReport, ResearchPlan, TraderProposal, PortfolioDecision, CycleLog
 
 logger = logging.getLogger("orchestrator")
@@ -36,7 +36,7 @@ class Orchestrator:
         for attempt in range(max_retries + 1):
             try:
                 return await agent.run(prompt)
-            except (AgentTimeoutError, AgentVerificationError) as e:
+            except (AgentTimeoutError, AgentAPIError, AgentVerificationError) as e:
                 logger.warning(f"{agent.name} attempt {attempt+1} failed: {e}")
                 if attempt == max_retries:
                     flags.append(f"DEGRADED: {agent.name} — {e}")
