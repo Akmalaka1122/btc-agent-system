@@ -36,19 +36,19 @@ class Orchestrator:
         # LLM agents
         self.market_analyst = Agent(
             "Market & Sentiment Analyst", "01-market-sentiment-analyst.soul.md",
-            output_schema=MarketReport, timeout_s=30
+            output_schema=MarketReport, timeout_s=120
         )
         self.research_agent = Agent(
             "Research Agent", "02-research-agent.soul.md",
-            output_schema=ResearchPlan, timeout_s=30
+            output_schema=ResearchPlan, timeout_s=120
         )
         self.trader = Agent(
             "Trader Agent", "03-trader-agent.soul.md",
-            output_schema=TraderProposal, timeout_s=30
+            output_schema=TraderProposal, timeout_s=120
         )
         self.risk_pm = Agent(
             "Risk & Portfolio Manager", "04-risk-portfolio-manager.soul.md",
-            output_schema=PortfolioDecision, timeout_s=30
+            output_schema=PortfolioDecision, timeout_s=120
         )
 
     # ------------------------------------------------------------------

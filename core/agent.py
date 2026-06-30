@@ -146,7 +146,22 @@ class Agent:
         )
         if not response.choices:
             raise AgentVerificationError(f"{self.name} returned empty response (no choices)")
-        return response.choices[0].message.content or ""
+        msg = response.choices[0].message
+        content = msg.content or ""
+
+        # Handle reasoning models (MiMo, DeepSeek R1, etc.)
+        # These models put the actual answer in `content` and reasoning in
+        # `reasoning_content`. If content is empty, fall back to reasoning_content.
+        if not content and hasattr(msg, "reasoning_content"):
+            reasoning = getattr(msg, "reasoning_content", None)
+            if reasoning:
+                logger.info(f"{self.name}: content empty, using reasoning_content ({len(reasoning)} chars)")
+                content = reasoning
+
+        if not content:
+            raise AgentVerificationError(f"{self.name} returned empty content")
+
+        return content
 
     # ------------------------------------------------------------------
     # Anthropic native SDK call
