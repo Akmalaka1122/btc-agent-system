@@ -327,6 +327,31 @@ class Orchestrator:
                 )
             except Exception as e:
                 logger.error(f"Failed to record cycle to DB: {e}")
+        
+        # STEP 6: Log decision for conversational interface (Phase 1: Meridian pattern)
+        from core.decision_log import append_decision
+        
+        if log.final_decision:
+            d = log.final_decision
+            summary = f"{d.rating.value.upper()} with {d.confidence}/10 confidence"
+            reason = f"Position: ${d.position_size_usd:.2f}, EV: {d.expected_value:.4f}, R/R: {d.risk_reward_ratio:.2f}. {d.reasoning[:200]}"
+            risks = d.warnings if d.warnings else []
+            rejected = []  # TODO: Could extract from agent outputs
+        elif log.error:
+            summary = f"SKIP: {log.error[:100]}"
+            reason = log.error
+            risks = []
+            rejected = []
+        else:
+            summary = "SKIP: No final decision"
+            reason = "Pipeline completed but no decision generated"
+            risks = []
+            rejected = []
+        
+        try:
+            append_decision(log, summary, reason, risks, rejected)
+        except Exception as e:
+            logger.warning(f"Decision log failed: {e}")
 
         return log
 
