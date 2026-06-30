@@ -8,12 +8,12 @@ import logging
 from pathlib import Path
 
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
 
 from core.orchestrator import Orchestrator
 from core.schemas import CycleLog
-
+logger = logging.getLogger("telegram_bot")
 
 def _escape_md(text: str) -> str:
     """Escape Telegram Markdown special chars."""
@@ -203,6 +203,32 @@ async def broadcast_cycle(app: Application, log: CycleLog):
             logger.error(f"Failed to send Telegram alert: {e}")
 
 
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle non-command text messages (conversational queries)."""
+    if not update.message or not update.message.text:
+        return
+    
+    user_id = update.message.from_user.id if update.message.from_user else None
+    
+    # Only respond to admin users
+    if user_id not in ADMIN_IDS:
+        return
+    
+    message = update.message.text.strip()
+    
+    # Import here to avoid circular dependency
+    from telegram_bot.conversational import handle_message
+    
+    try:
+        response = await handle_message(message, user_id)
+        await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Conversational handler error: {e}")
+        await update.message.reply_text(
+            f"❌ Error processing query: {str(e)[:100]}"
+        )
+
+
 def build_app(orchestrator: Orchestrator) -> Application:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
@@ -215,4 +241,8 @@ def build_app(orchestrator: Orchestrator) -> Application:
     app.add_handler(CommandHandler("resume", cmd_resume))
     app.add_handler(CommandHandler("run", cmd_run))
     app.add_handler(CommandHandler("model", cmd_model))
+    
+    # Message handler for conversational queries (non-commands)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
+    
     return app
