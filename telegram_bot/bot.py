@@ -116,7 +116,18 @@ async def cmd_run(update: Update, context: ContextTypes.DEFAULT_TYPE):
     market_context = "Manual trigger — fetch current BTC market data and run full analysis."
     log = await orchestrator.run_cycle(market_context)
     _record_cycle(log)
+    # Reply to triggering user
     await update.message.reply_text(format_cycle_message(log), parse_mode=ParseMode.MARKDOWN)
+    # Also broadcast to CHAT_ID if set and different from current chat
+    if CHAT_ID and update.effective_chat and str(update.effective_chat.id) != str(CHAT_ID):
+        try:
+            await context.bot.send_message(
+                chat_id=CHAT_ID,
+                text=format_cycle_message(log),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as e:
+            logger.error(f"Failed to broadcast manual run to CHAT_ID: {e}")
 
 
 def _record_cycle(log: CycleLog):

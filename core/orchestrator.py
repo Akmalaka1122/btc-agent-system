@@ -59,17 +59,19 @@ class Orchestrator:
     async def run_cycle(self, market_context: str) -> CycleLog:
         cycle_id = str(uuid.uuid4())[:8]
         t0 = datetime.now(timezone.utc)
+        # Note: dq_flags/verify_flags are safe to .append() from parallel coroutines
+        # because asyncio is single-threaded — list.append() is atomic in this context.
         wave_status, latency, verify_flags, dq_flags = {}, {}, [], []
 
         # ---- WAVE 1: parallel analysts ----
-        w1_start = asyncio.get_event_loop().time()
+        w1_start = asyncio.get_running_loop().time()
         price_r, sent_r, news_r, chain_r = await asyncio.gather(
             self._safe_run(self.price_analyst, market_context, dq_flags),
             self._safe_run(self.sentiment_analyst, market_context, dq_flags),
             self._safe_run(self.news_analyst, market_context, dq_flags),
             self._safe_run(self.onchain_analyst, market_context, dq_flags),
         )
-        latency["wave1"] = asyncio.get_event_loop().time() - w1_start
+        latency["wave1"] = asyncio.get_running_loop().time() - w1_start
         wave_status["wave1"] = "degraded" if any("DEGRADED" in f for f in dq_flags) else "complete"
 
         analyst_bundle = (
@@ -80,7 +82,7 @@ class Orchestrator:
         )
 
         # ---- WAVE 2: bull/bear debate (2 rounds) ----
-        w2_start = asyncio.get_event_loop().time()
+        w2_start = asyncio.get_running_loop().time()
         debate_history = ""
         for round_n in range(2):
             bull_r = await self._safe_run(
@@ -89,28 +91,28 @@ class Orchestrator:
             bear_r = await self._safe_run(
                 self.bear, f"{analyst_bundle}\n\nDebate history:\n{debate_history}", dq_flags)
             debate_history += f"\n[Round {round_n+1}] BEAR: {bear_r['raw']}"
-        latency["wave2"] = asyncio.get_event_loop().time() - w2_start
+        latency["wave2"] = asyncio.get_running_loop().time() - w2_start
         wave_status["wave2"] = "complete"
 
         # ---- WAVE 3: research manager ----
-        w3_start = asyncio.get_event_loop().time()
+        w3_start = asyncio.get_running_loop().time()
         rm_result = await self._safe_run(
             self.research_manager, f"Debate history:\n{debate_history}", verify_flags)
-        latency["wave3"] = asyncio.get_event_loop().time() - w3_start
+        latency["wave3"] = asyncio.get_running_loop().time() - w3_start
         wave_status["wave3"] = "complete" if rm_result["parsed"] else "degraded"
 
         # ---- WAVE 4: trader ----
-        w4_start = asyncio.get_event_loop().time()
+        w4_start = asyncio.get_running_loop().time()
         trader_result = await self._safe_run(
             self.trader,
             f"Research plan:\n{rm_result['raw']}\n\nAnalyst reports:\n{analyst_bundle}",
             verify_flags
         )
-        latency["wave4"] = asyncio.get_event_loop().time() - w4_start
+        latency["wave4"] = asyncio.get_running_loop().time() - w4_start
         wave_status["wave4"] = "complete" if trader_result["parsed"] else "degraded"
 
         # ---- WAVE 5: risk debate (2 rounds, 3-way) ----
-        w5_start = asyncio.get_event_loop().time()
+        w5_start = asyncio.get_running_loop().time()
         risk_history = ""
         for round_n in range(2):
             agg_r = await self._safe_run(
@@ -122,18 +124,18 @@ class Orchestrator:
             neu_r = await self._safe_run(
                 self.risk_neutral, f"Trader decision:\n{trader_result['raw']}\n\nHistory:\n{risk_history}", dq_flags)
             risk_history += f"\n[R{round_n+1}] NEUTRAL: {neu_r['raw']}"
-        latency["wave5"] = asyncio.get_event_loop().time() - w5_start
+        latency["wave5"] = asyncio.get_running_loop().time() - w5_start
         wave_status["wave5"] = "complete"
 
         # ---- WAVE 6: portfolio manager (final decision) ----
-        w6_start = asyncio.get_event_loop().time()
+        w6_start = asyncio.get_running_loop().time()
         pm_result = await self._safe_run(
             self.portfolio_manager,
             f"Research plan:\n{rm_result['raw']}\n\nTrader plan:\n{trader_result['raw']}\n\n"
             f"Risk debate history:\n{risk_history}",
             verify_flags
         )
-        latency["wave6"] = asyncio.get_event_loop().time() - w6_start
+        latency["wave6"] = asyncio.get_running_loop().time() - w6_start
         wave_status["wave6"] = "complete" if pm_result["parsed"] else "degraded"
 
         total_latency = (datetime.now(timezone.utc) - t0).total_seconds()

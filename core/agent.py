@@ -17,12 +17,16 @@ logger = logging.getLogger("agent")
 
 SOULS_DIR = Path(__file__).parent.parent / "souls"
 
-# Config dari env — user isi manual saat start
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.xpiki.com/v1")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "kr/claude-opus-4.8")
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2000"))
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.3"))
+
+def _get_config() -> dict:
+    """Lazy config — reads .env every time, so values are always current."""
+    return {
+        "base_url": os.getenv("LLM_BASE_URL", "https://api.xpiki.com/v1"),
+        "api_key": os.getenv("LLM_API_KEY", ""),
+        "model": os.getenv("LLM_MODEL", "kr/claude-opus-4.8"),
+        "max_tokens": int(os.getenv("LLM_MAX_TOKENS", "2000")),
+        "temperature": float(os.getenv("LLM_TEMPERATURE", "0.3")),
+    }
 
 
 class AgentTimeoutError(Exception):
@@ -56,9 +60,10 @@ class Agent:
         return self.soul_path.read_text(encoding="utf-8")
 
     def _build_client(self) -> AsyncOpenAI:
+        cfg = _get_config()
         return AsyncOpenAI(
-            base_url=LLM_BASE_URL,
-            api_key=LLM_API_KEY,
+            base_url=cfg["base_url"],
+            api_key=cfg["api_key"],
             timeout=self.timeout_s,
         )
 
@@ -76,11 +81,12 @@ class Agent:
 
     async def run(self, user_message: str) -> dict:
         """Returns {'raw': str, 'parsed': BaseModel | None}"""
+        cfg = _get_config()
         try:
             response = await self._client.chat.completions.create(
-                model=LLM_MODEL,
-                max_tokens=LLM_MAX_TOKENS,
-                temperature=LLM_TEMPERATURE,
+                model=cfg["model"],
+                max_tokens=cfg["max_tokens"],
+                temperature=cfg["temperature"],
                 messages=[
                     {"role": "system", "content": self._system_prompt()},
                     {"role": "user", "content": user_message},
@@ -98,9 +104,10 @@ class Agent:
         if self.output_schema:
             try:
                 clean = raw_text.strip()
-                # Strip markdown code fences if present
+                # Strip markdown code fences if present (handles ```json, ```JSON, etc.)
                 if clean.startswith("```"):
-                    clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
+                    first_line_end = clean.index("\n") if "\n" in clean else len(clean)
+                    clean = clean[first_line_end + 1:] if first_line_end < len(clean) else clean[3:]
                 if clean.endswith("```"):
                     clean = clean[:-3]
                 clean = clean.strip()
