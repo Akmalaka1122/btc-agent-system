@@ -221,6 +221,17 @@ class Orchestrator:
             logger.debug("Memory injection: Recent decisions injected into context")
         except Exception as e:
             logger.warning(f"Memory injection failed (continuing without): {e}")
+        
+        # STEP 0.7: Inject lessons from past trades (Phase 4: Self-Correction)
+        from core.self_correction import get_lessons_summary
+        
+        try:
+            lessons = get_lessons_summary(limit=3)
+            if lessons:
+                market_context = f"{lessons}\n\n{market_context}"
+                logger.debug("Self-correction: Lessons injected into context")
+        except Exception as e:
+            logger.warning(f"Lesson injection failed (continuing without): {e}")
 
         # STEP 1: Market & Sentiment Analyst
         s1 = asyncio.get_running_loop().time()
@@ -361,7 +372,30 @@ class Orchestrator:
             append_decision(log, summary, reason, risks, rejected)
         except Exception as e:
             logger.warning(f"Decision log failed: {e}")
-
+        
+        # STEP 7: Record trade entry for outcome tracking (Phase 4: Self-Correction)
+        if log.final_decision and log.final_decision.rating.value != "SKIP":
+            from core.self_correction import get_outcome_tracker
+            
+            try:
+                tracker = get_outcome_tracker()
+                market_price = None
+                if market and hasattr(market, "btc_price"):
+                    market_price = market.btc_price
+                
+                tracker.record_entry(
+                    cycle_id=cycle_id,
+                    decision=log.final_decision.rating.value,
+                    confidence=log.final_decision.confidence,
+                    entry_price=market_price or 0.0,
+                    confluence=market.confluence_total if market else 0,
+                    setup_match=(market.setup_match or "none") if market else "none",
+                    reasoning=log.final_decision.reasoning[:300],
+                    position_size_usd=log.final_decision.position_size_usd,
+                )
+            except Exception as e:
+                logger.warning(f"Outcome tracking failed: {e}")
+        
         return log
 
     def _degraded_log(self, cycle_id, t0, step_status, latency, flags, error_msg) -> CycleLog:
