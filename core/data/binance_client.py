@@ -126,3 +126,12 @@ class BinanceClient:
 
     async def close(self):
         await self.client.aclose()
+
+    async def get_price(self, symbol: str = "BTCUSDT") -> float:
+        """Get current price — lightweight single endpoint."""
+        resp = await self.client.get(
+            f"{SPOT_URL}/api/v3/ticker/price",
+            params={"symbol": symbol},
+        )
+        resp.raise_for_status()
+        return float(resp.json()["price"])

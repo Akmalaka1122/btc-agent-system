@@ -1,191 +1,328 @@
 """
-main.py — entry point.
+main.py — Paper Trading Bot with Telegram Gateway.
 
-Menjalankan:
-1. Database init (SQLite — cycle history, circuit breakers)
-2. Binance client (REST — OHLCV, orderbook, funding, OI)
-3. Polymarket client (CLOB — market odds)
-4. Liquidation tracker (WebSocket — background listener)
-5. Telegram bot (polling, untuk command /status /history /pause /resume /run)
-6. Scheduler yang trigger orchestrator.run_cycle() tiap CYCLE_INTERVAL_SECONDS,
-   lalu broadcast hasilnya ke Telegram.
+Runs 24/7:
+1. Telegram bot polling (commands + conversational)
+2. Scheduler loop (run_cycle every CYCLE_INTERVAL_SECONDS)
+3. After each cycle: broadcast to Telegram + log decision
+4. Outcome tracking: resolve previous cycle after 5min window
+5. Self-correction: lessons injected into future cycles
 
-Jalankan: python main.py
+Usage:
+    python main.py
 """
 import asyncio
 import logging
 import os
+import signal
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
 from dotenv import load_dotenv
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from core.orchestrator import Orchestrator
 from core.data.binance_client import BinanceClient
-from core.data.polymarket_client import PolymarketClient
-from core.data.liquidation_tracker import LiquidationTracker
-from core.data.db import Database
-from telegram_bot.bot import build_app, broadcast_cycle, STATE
+from core.decision_log import get_decision_log
+from core.self_correction import get_outcome_tracker, get_lesson_generator
+from telegram_bot.bot import build_app, STATE, broadcast_cycle, format_cycle_message
 
+# ─────────────────────────────────────────────
+# Config
+# ─────────────────────────────────────────────
 load_dotenv()
 
+CYCLE_INTERVAL = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))
+LOG_DIR = Path.home() / ".hermes" / "btc-agent-system"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# ─────────────────────────────────────────────
+# Logging
+# ─────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_DIR / "paper_trading.log"),
+    ],
 )
-logger = logging.getLogger("main")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
-CYCLE_INTERVAL = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))  # default 5 menit
-PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
+logger = logging.getLogger("paper_trading")
 
-if not os.getenv("LLM_API_KEY"):
-    raise RuntimeError(
-        "LLM_API_KEY not set. Copy .env.example to .env and fill in your API key.\n"
-        "See .env.example for provider options (OpenRouter, Xiaomi, DeepSeek, Anthropic, OpenAI)"
-    )
+# ─────────────────────────────────────────────
+# Shutdown
+# ─────────────────────────────────────────────
+shutdown_event = asyncio.Event()
 
 
-async def build_market_context(binance: BinanceClient, liq_tracker: LiquidationTracker) -> str:
-    """
-    Build market context string dari real data.
-    Dipanggil oleh scheduled_cycle dan manual /run.
-    """
-    sections = []
+def handle_signal(sig, frame):
+    logger.info(f"Received signal {sig}, shutting down...")
+    shutdown_event.set()
 
-    try:
-        candles = await binance.get_ohlcv(interval="5m", limit=50)
-        if candles:
-            last = candles[-1]
-            prev = candles[-2] if len(candles) > 1 else last
-            sections.append(
-                f"## BTC Price (5m candles)\n"
-                f"Current: ${last['close']:,.2f}\n"
-                f"Last candle: O=${last['open']:,.2f} H=${last['high']:,.2f} "
-                f"L=${last['low']:,.2f} C=${last['close']:,.2f} Vol={last['volume']:,.2f}\n"
-                f"Prev candle: O=${prev['open']:,.2f} H=${prev['high']:,.2f} "
-                f"L=${prev['low']:,.2f} C=${prev['close']:,.2f}\n"
-                f"Change: {((last['close'] - prev['close']) / prev['close'] * 100):+.3f}%"
-            )
-    except Exception as e:
-        logger.warning(f"OHLCV fetch failed: {e}")
-        sections.append("## BTC Price: UNAVAILABLE")
 
-    try:
-        book = await binance.get_orderbook_snapshot(limit=20)
-        sections.append(
-            f"## Orderbook (top 20)\n"
-            f"Bid: ${book['best_bid']:,.2f} | Ask: ${book['best_ask']:,.2f}\n"
-            f"Spread: ${book['spread']:,.2f}\n"
-            f"Bid vol: {book['bid_volume']:.3f} BTC | Ask vol: {book['ask_volume']:.3f} BTC\n"
-            f"Imbalance: {book['bid_ask_imbalance']:.3f}"
-        )
-    except Exception as e:
-        logger.warning(f"Orderbook fetch failed: {e}")
-        sections.append("## Orderbook: UNAVAILABLE")
+signal.signal(signal.SIGINT, handle_signal)
+signal.signal(signal.SIGTERM, handle_signal)
 
-    try:
-        funding = await binance.get_funding_rate()
-        fr = funding['funding_rate'] * 100
-        sections.append(
-            f"## Funding\n"
-            f"Rate: {fr:+.4f}% | Mark: ${funding['mark_price']:,.2f}"
-        )
-    except Exception as e:
-        logger.warning(f"Funding fetch failed: {e}")
 
-    try:
-        oi = await binance.get_open_interest()
-        sections.append(f"## Open Interest\n{oi['open_interest']:.3f} BTC")
-    except Exception as e:
-        logger.warning(f"OI fetch failed: {e}")
+# ─────────────────────────────────────────────
+# Pending outcomes (resolve after 5min)
+# ─────────────────────────────────────────────
+pending_outcomes = []  # List of (cycle_id, entry_price, resolve_after)
 
-    try:
-        liq = liq_tracker.get_recent(minutes=5)
-        if liq["count"] > 0:
-            sections.append(
-                f"## Liquidations (5m)\n"
-                f"Longs: ${liq['long_liquidations_usd']:,.0f} | "
-                f"Shorts: ${liq['short_liquidations_usd']:,.0f} | "
-                f"Count: {liq['count']}"
-            )
+
+async def resolve_pending_outcomes(tracker, generator):
+    """Check and resolve outcomes whose 5-minute window has passed."""
+    now = datetime.now(timezone.utc)
+    resolved_count = 0
+    
+    still_pending = []
+    for pending in pending_outcomes:
+        cycle_id, entry_price, resolve_after = pending
+        
+        if now >= resolve_after:
+            try:
+                # Fetch current price for outcome resolution
+                from core.data.binance_client import BinanceClient as BC
+                client = BC(timeout=10.0)
+                try:
+                    current_price = await client.get_price("BTCUSDT")
+                finally:
+                    await client.close()
+                
+                outcome = tracker.resolve_outcome(cycle_id, current_price)
+                if outcome:
+                    lesson = generator.generate_lesson(outcome)
+                    resolved_count += 1
+                    
+                    emoji = "✅" if outcome["win"] else "❌"
+                    logger.info(
+                        f"Outcome resolved: {cycle_id} "
+                        f"{emoji} {'WIN' if outcome['win'] else 'LOSS'} "
+                        f"({outcome['actual_move_pct']:+.3f}%) "
+                        f"PnL: ${outcome['pnl_usd']:+.2f} "
+                        f"Lesson: {lesson['category']}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to resolve outcome {cycle_id}: {e}")
+                still_pending.append(pending)
         else:
-            sections.append("## Liquidations (5m)\nNone")
-    except Exception as e:
-        logger.warning(f"Liquidation fetch failed: {e}")
-
-    return "\n\n".join(sections) if sections else "⚠️ NO DATA — all sources failed"
-
-
-async def scheduled_cycle(orchestrator: Orchestrator, app, binance, liq_tracker):
-    if not STATE["running"]:
-        logger.info("Scheduler paused, skipping cycle.")
-        return
-    try:
-        # Build real market context from Binance + liquidation data
-        market_context = await build_market_context(binance, liq_tracker)
-        log = await orchestrator.run_cycle(market_context)
-        await broadcast_cycle(app, log)
-        logger.info(
-            f"Cycle {log.cycle_id} done in {log.latency_seconds.get('total', 0):.1f}s "
-            f"-> {log.final_decision.rating.value if log.final_decision else 'ERROR'}"
-        )
-    except Exception:
-        logger.exception("Cycle failed with unhandled exception")
+            still_pending.append(pending)
+    
+    pending_outcomes.clear()
+    pending_outcomes.extend(still_pending)
+    
+    return resolved_count
 
 
+# ─────────────────────────────────────────────
+# Scheduler loop
+# ─────────────────────────────────────────────
+async def scheduler_loop(orchestrator, app):
+    """Run trading cycles on interval."""
+    logger.info(f"⏰ Scheduler started (interval: {CYCLE_INTERVAL}s)")
+    
+    tracker = get_outcome_tracker()
+    generator = get_lesson_generator()
+    cycle_count = 0
+    
+    while not shutdown_event.is_set():
+        if not STATE["running"]:
+            logger.info("⏸ System PAUSED, waiting...")
+            await asyncio.sleep(10)
+            continue
+        
+        cycle_count += 1
+        logger.info(f"{'='*60}")
+        logger.info(f"CYCLE #{cycle_count} STARTING")
+        logger.info(f"{'='*60}")
+        
+        try:
+            # Run orchestrator cycle
+            log = await orchestrator.run_cycle()
+            
+            # Record in STATE
+            STATE["last_cycle"] = log
+            STATE["history"].append(log)
+            if len(STATE["history"]) > 20:
+                STATE["history"].pop(0)
+            
+            # Broadcast to Telegram
+            try:
+                await broadcast_cycle(app, log)
+            except Exception as e:
+                logger.warning(f"Telegram broadcast failed: {e}")
+            
+            # Track outcome for non-SKIP decisions
+            if log.final_decision and log.final_decision.rating.value != "SKIP":
+                try:
+                    from core.data.binance_client import BinanceClient as BC2
+                    _bc = BC2(timeout=10.0)
+                    try:
+                        entry_price = await _bc.get_price("BTCUSDT")
+                    finally:
+                        await _bc.close()
+                    
+                    # Resolve after CYCLE_INTERVAL seconds
+                    resolve_after = datetime.now(timezone.utc)
+                    from datetime import timedelta
+                    resolve_after += timedelta(seconds=CYCLE_INTERVAL)
+                    
+                    pending_outcomes.append((log.cycle_id, entry_price, resolve_after))
+                    logger.info(
+                        f"Tracking outcome: {log.cycle_id} "
+                        f"{log.final_decision.rating.value} "
+                        f"@ ${entry_price:,.2f} "
+                        f"(resolve in {CYCLE_INTERVAL}s)"
+                    )
+                except Exception as e:
+                    logger.warning(f"Outcome tracking failed: {e}")
+            
+            # Resolve any pending outcomes
+            resolved = await resolve_pending_outcomes(tracker, generator)
+            if resolved:
+                logger.info(f"📊 Resolved {resolved} pending outcomes")
+            
+            # Log cycle summary
+            if log.final_decision:
+                d = log.final_decision
+                logger.info(
+                    f"Decision: {d.rating.value} | "
+                    f"Confidence: {d.confidence}/10 | "
+                    f"Position: ${d.position_size_usd:.2f} | "
+                    f"Latency: {log.latency_seconds.get('total', 0):.1f}s"
+                )
+            else:
+                logger.info(f"Decision: SKIP ({log.error})")
+            
+            stats = tracker.get_stats()
+            logger.info(
+                f"Stats: {stats['total_trades']} trades | "
+                f"Win rate: {stats['win_rate']:.1%} | "
+                f"PnL: ${stats['total_pnl']:+,.2f} | "
+                f"Unresolved: {stats['unresolved']}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Cycle {cycle_count} failed: {e}", exc_info=True)
+        
+        # Wait for next cycle (with early exit on shutdown)
+        logger.info(f"💤 Next cycle in {CYCLE_INTERVAL}s...")
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=CYCLE_INTERVAL)
+            break  # shutdown_event was set
+        except asyncio.TimeoutError:
+            pass  # normal — timeout reached, run next cycle
+    
+    logger.info("⏰ Scheduler stopped")
+
+
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
 async def main():
-    if PAPER_TRADING:
-        logger.warning("PAPER_TRADING=true — tidak ada eksekusi order nyata.")
-
-    # --- Initialize data clients ---
-    binance = BinanceClient(timeout=10.0)
-    polymarket = PolymarketClient(timeout=10.0)
-    liq_tracker = LiquidationTracker(buffer_minutes=30)
-    db = Database("btc_agent_system.db")
-
-    # Start DB
-    await db.init()
-    logger.info("Database initialized")
-
-    # Start liquidation WebSocket listener
-    liq_tracker.start()
-    logger.info("Liquidation tracker started")
-
-    # --- Initialize orchestrator with data clients ---
+    logger.info("=" * 60)
+    logger.info("BTC AGENT SYSTEM — PAPER TRADING MODE")
+    logger.info("=" * 60)
+    logger.info(f"Cycle interval: {CYCLE_INTERVAL}s ({CYCLE_INTERVAL//60}min)")
+    logger.info(f"Log dir: {LOG_DIR}")
+    
+    # Initialize data client
+    binance = BinanceClient(timeout=15.0)
+    logger.info("✅ Binance client initialized")
+    
+    # Initialize orchestrator
     orchestrator = Orchestrator(
         binance_client=binance,
-        polymarket_client=polymarket,
-        liquidation_tracker=liq_tracker,
-        database=db,
+        polymarket_client=None,
+        liquidation_tracker=None,
+        database=None,
     )
-
-    # --- Telegram bot ---
+    logger.info("✅ Orchestrator initialized (5 agents)")
+    
+    # Initialize decision log
+    dl = get_decision_log()
+    recent = dl.get_recent(limit=1)
+    logger.info(f"✅ Decision log: {len(dl.get_recent(limit=100))} entries")
+    
+    # Initialize self-correction
+    tracker = get_outcome_tracker()
+    stats = tracker.get_stats()
+    logger.info(f"✅ Outcome tracker: {stats['total_trades']} resolved, {stats['unresolved']} pending")
+    
+    # Build Telegram bot
     app = build_app(orchestrator)
-
-    # --- Scheduler ---
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        scheduled_cycle, "interval", seconds=CYCLE_INTERVAL,
-        args=[orchestrator, app, binance, liq_tracker],
-        id="btc_cycle", max_instances=1,
-    )
-    scheduler.start()
-
-    logger.info(f"System starting. Cycle interval: {CYCLE_INTERVAL}s | Provider: {os.getenv('LLM_PROVIDER', 'openrouter')}")
-
+    me = await app.bot.get_me()
+    logger.info(f"✅ Telegram bot: @{me.username} (ID: {me.id})")
+    logger.info(f"✅ Admin: {os.getenv('TELEGRAM_ADMIN_IDS')}")
+    logger.info(f"✅ Chat: {os.getenv('TELEGRAM_CHAT_ID')}")
+    
+    # Startup notification
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if chat_id:
+        try:
+            startup_msg = (
+                f"🚀 **Paper Trading Started**\n\n"
+                f"⏰ Interval: {CYCLE_INTERVAL}s ({CYCLE_INTERVAL//60}min)\n"
+                f"📊 History: {stats['total_trades']} trades\n"
+                f"📈 Win rate: {stats['win_rate']:.1%}\n"
+                f"💰 PnL: ${stats['total_pnl']:+,.2f}\n\n"
+                f"Commands: /status /run /pause /resume\n"
+                f"Chat: \"why skip?\" / \"summary\" / \"show losses\""
+            )
+            await app.bot.send_message(
+                chat_id=chat_id, text=startup_msg, parse_mode="Markdown"
+            )
+            logger.info("✅ Startup notification sent")
+        except Exception as e:
+            logger.warning(f"Startup notification failed: {e}")
+    
+    # Start bot + scheduler
+    logger.info("🟢 Starting bot polling + scheduler...")
+    
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
+        
+        # Run scheduler in background
+        scheduler_task = asyncio.create_task(scheduler_loop(orchestrator, app))
+        
+        # Wait for shutdown
         try:
-            await asyncio.Event().wait()  # run forever
+            await shutdown_event.wait()
         finally:
-            logger.info("Shutting down...")
+            logger.info("⏹ Shutting down...")
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
+            
+            # Shutdown notification
+            if chat_id:
+                try:
+                    final_stats = tracker.get_stats()
+                    await app.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"⏹ **Paper Trading Stopped**\n\n"
+                            f"📊 Trades: {final_stats['total_trades']}\n"
+                            f"📈 Win rate: {final_stats['win_rate']:.1%}\n"
+                            f"💰 PnL: ${final_stats['total_pnl']:+,.2f}"
+                        ),
+                        parse_mode="Markdown",
+                    )
+                except Exception:
+                    pass
+            
             await app.updater.stop()
             await app.stop()
-            liq_tracker.stop()
             await binance.close()
-            await polymarket.close()
-            await db.close()
-            logger.info("Shutdown complete")
+            logger.info("✅ Shutdown complete")
 
 
 if __name__ == "__main__":
