@@ -306,7 +306,7 @@ class Agent:
     # ------------------------------------------------------------------
     # ReAct loop — Reason → Act → Observe → repeat
     # ------------------------------------------------------------------
-    async def run_react(self, user_message: str, max_iterations: int = 3) -> dict:
+    async def run_react(self, user_message: str, max_iterations: int = 5) -> dict:
         """
         ReAct-style execution: agent reasons, calls tools if needed,
         observes results, and loops until final answer.
@@ -380,7 +380,7 @@ class Agent:
             full_conversation.append(f"--- Tool Results ---\n{obs_text}")
 
             messages.append({"role": "assistant", "content": raw_text})
-            messages.append({"role": "user", "content": f"Tool results:\n{obs_text}\n\nContinue your reasoning or provide your final answer."})
+            messages.append({"role": "user", "content": f"Tool results:\n{obs_text}\n\nBased on these results, provide your FINAL answer as valid JSON matching the required schema. Do NOT output prose — output ONLY the JSON object."})
 
         # Combine all reasoning for the raw output
         combined_raw = "\n\n".join(full_conversation)
