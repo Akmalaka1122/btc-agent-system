@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from core.agent import Agent, AgentTimeoutError, AgentAPIError, AgentVerificationError
 from core.schemas import MarketReport, ResearchPlan, TraderProposal, PortfolioDecision, CycleLog
+from core.tools import create_btc_tools
 
 logger = logging.getLogger("orchestrator")
 
@@ -34,6 +35,12 @@ class Orchestrator:
         self.liq_tracker = liquidation_tracker
         self.db = database
 
+        # Tool registry for ReAct-style agents
+        self.tool_registry = create_btc_tools(
+            binance_client=binance_client,
+            polymarket_client=polymarket_client,
+        )
+
         # LLM agents
         self.market_analyst = Agent(
             "Market & Sentiment Analyst", "01-market-sentiment-analyst.soul.md",
@@ -43,9 +50,11 @@ class Orchestrator:
             "Research Agent", "02-research-agent.soul.md",
             output_schema=ResearchPlan, timeout_s=120
         )
+        # Trader gets tools for ReAct-style verification before final decision
         self.trader = Agent(
             "Trader Agent", "03-trader-agent.soul.md",
-            output_schema=TraderProposal, timeout_s=120
+            output_schema=TraderProposal, timeout_s=120,
+            tools=self.tool_registry,
         )
         self.risk_pm = Agent(
             "Risk & Portfolio Manager", "04-risk-portfolio-manager.soul.md",
@@ -220,6 +229,24 @@ class Orchestrator:
                             "parsed": None}
                 await asyncio.sleep(1)
 
+    async def _safe_run_react(self, agent: Agent, prompt: str, flags: list, max_retries: int = 1):
+        """Run agent with ReAct loop (tool-calling). Falls back to plain run on failure."""
+        for attempt in range(max_retries + 1):
+            try:
+                return await agent.run_react(prompt)
+            except (AgentTimeoutError, AgentAPIError, AgentVerificationError) as e:
+                logger.warning(f"{agent.name} ReAct attempt {attempt+1} failed: {e}")
+                if attempt == max_retries:
+                    # Final fallback: try plain run without tools
+                    logger.info(f"{agent.name} ReAct failed, falling back to plain run")
+                    try:
+                        return await agent.run(prompt)
+                    except Exception as e2:
+                        flags.append(f"DEGRADED: {agent.name} — {e2}")
+                        return {"raw": f"[DEGRADED: {agent.name} failed after ReAct + fallback]",
+                                "parsed": None}
+                await asyncio.sleep(1)
+
     # ------------------------------------------------------------------
     # Main cycle
     # ------------------------------------------------------------------
@@ -307,9 +334,9 @@ class Orchestrator:
             return self._degraded_log(cycle_id, t0, step_status, latency, flags,
                                        "Research agent failed — routing to SKIP")
 
-        # STEP 3: Trader Agent
+        # STEP 3: Trader Agent (ReAct — can call tools to verify data)
         s3 = asyncio.get_running_loop().time()
-        trader_result = await self._safe_run(
+        trader_result = await self._safe_run_react(
             self.trader,
             f"Research Plan:\n{research_result['raw']}\n\nMarket Report:\n{market_result['raw']}",
             flags

@@ -11,6 +11,7 @@ Provider is selected via LLM_PROVIDER env var:
 import os
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional, Type
 from pydantic import BaseModel
@@ -162,6 +163,7 @@ class Agent:
         technical_prompt: str = "",
         output_schema: Optional[Type[BaseModel]] = None,
         timeout_s: float = 30.0,
+        tools=None,
     ):
         self.name = name
         self.soul_path = SOULS_DIR / soul_file
@@ -170,6 +172,7 @@ class Agent:
         self.timeout_s = timeout_s
         self._soul_text = self._load_soul()
         self._client = None  # lazy init per-run to pick up latest config
+        self.tools = tools  # ToolRegistry (optional)
 
     def _load_soul(self) -> str:
         if not self.soul_path.exists():
@@ -299,3 +302,139 @@ class Agent:
                 )
 
         return {"raw": raw_text, "parsed": parsed}
+
+    # ------------------------------------------------------------------
+    # ReAct loop — Reason → Act → Observe → repeat
+    # ------------------------------------------------------------------
+    async def run_react(self, user_message: str, max_iterations: int = 3) -> dict:
+        """
+        ReAct-style execution: agent reasons, calls tools if needed,
+        observes results, and loops until final answer.
+
+        For providers without native tool-calling, uses text-based
+        tool_call JSON blocks in the LLM output.
+
+        Returns same format as run(): {'raw': str, 'parsed': BaseModel | None}
+        """
+        if not self.tools:
+            # No tools registered, fall back to standard run
+            return await self.run(user_message)
+
+        cfg = _get_config()
+        system = self._system_prompt()
+
+        # Add tool descriptions to system prompt
+        tool_desc = self.tools.to_text_description()
+        system = f"{system}\n\n---\n{tool_desc}"
+
+        # Build conversation
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_message},
+        ]
+
+        full_conversation = []  # Track all reasoning for final output
+        raw_text = ""  # Will hold last LLM response
+
+        for iteration in range(max_iterations):
+            logger.debug(f"{self.name} ReAct iteration {iteration + 1}/{max_iterations}")
+
+            try:
+                if cfg["sdk"] == "anthropic":
+                    raw_text = await self._call_anthropic(cfg, system, messages[-1]["content"])
+                else:
+                    raw_text = await self._call_openai(cfg, system, messages[-1]["content"])
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "timeout" in err_msg or "timed out" in err_msg:
+                    raise AgentTimeoutError(f"{self.name} ReAct timed out: {e}")
+                raise AgentAPIError(f"{self.name} ReAct API error: {e}")
+
+            full_conversation.append(f"--- Iteration {iteration + 1} ---\n{raw_text}")
+
+            # Parse tool calls from output
+            tool_calls = self._extract_tool_calls(raw_text)
+
+            if not tool_calls:
+                # No tool calls — this is the final answer
+                logger.debug(f"{self.name} ReAct: final answer at iteration {iteration + 1}")
+                break
+
+            # Execute tools and build observation
+            observations = []
+            for tc in tool_calls:
+                tool_name = tc.get("name", "")
+                tool_args = tc.get("args", {})
+
+                tool = self.tools.get(tool_name)
+                if not tool:
+                    observations.append(f"Tool '{tool_name}' not found. Available: {[t.name for t in self.tools.list_tools()]}")
+                    continue
+
+                logger.info(f"{self.name} calling tool: {tool_name}({tool_args})")
+                result = await tool.execute(**tool_args)
+                observations.append(f"Tool `{tool_name}` result:\n{result}")
+
+            # Append observation and continue loop
+            obs_text = "\n\n".join(observations)
+            full_conversation.append(f"--- Tool Results ---\n{obs_text}")
+
+            messages.append({"role": "assistant", "content": raw_text})
+            messages.append({"role": "user", "content": f"Tool results:\n{obs_text}\n\nContinue your reasoning or provide your final answer."})
+
+        # Combine all reasoning for the raw output
+        combined_raw = "\n\n".join(full_conversation)
+
+        # Parse final output (last LLM response)
+        parsed = None
+        if self.output_schema:
+            try:
+                clean = raw_text.strip()
+                if clean.startswith("```"):
+                    first_line_end = clean.index("\n") if "\n" in clean else len(clean)
+                    clean = clean[first_line_end + 1:] if first_line_end < len(clean) else clean[3:]
+                if clean.endswith("```"):
+                    clean = clean[:-3]
+                clean = clean.strip()
+                clean = _extract_json_object(clean)
+                parsed = self.output_schema.model_validate_json(clean)
+            except Exception as e:
+                logger.warning(f"{self.name} ReAct schema validation failed: {e}")
+                raise AgentVerificationError(
+                    f"{self.name} ReAct output failed schema validation: {e}"
+                )
+
+        return {"raw": combined_raw, "parsed": parsed}
+
+    def _extract_tool_calls(self, text: str) -> list[dict]:
+        """Extract tool calls from LLM output.
+
+        Looks for ```tool_call blocks with JSON, or standalone JSON objects
+        with 'name' and 'args' keys.
+        """
+        calls = []
+
+        # Pattern 1: ```tool_call ... ``` blocks
+        pattern = r'```tool_call\s*\n(.*?)\n```'
+        matches = re.findall(pattern, text, re.DOTALL)
+        for m in matches:
+            try:
+                tc = json.loads(m.strip())
+                if "name" in tc:
+                    calls.append(tc)
+            except json.JSONDecodeError:
+                pass
+
+        # Pattern 2: ```tool ... ``` blocks (shorter alias)
+        if not calls:
+            pattern2 = r'```tool\s*\n(.*?)\n```'
+            matches2 = re.findall(pattern2, text, re.DOTALL)
+            for m in matches2:
+                try:
+                    tc = json.loads(m.strip())
+                    if "name" in tc:
+                        calls.append(tc)
+                except json.JSONDecodeError:
+                    pass
+
+        return calls

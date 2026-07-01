@@ -61,6 +61,7 @@ def _make_orchestrator():
     orch.polymarket = None
     orch.liq_tracker = None
     orch.db = None
+    orch.tool_registry = MagicMock()
 
     # Mock all 4 agents
     orch.market_analyst = MagicMock()
@@ -85,6 +86,7 @@ class TestOrchestratorPipeline:
         orch.trader.run = AsyncMock(return_value={
             "raw": "trader proposal", "parsed": _mock_trader_proposal()
         })
+        orch.trader.run_react = orch.trader.run
         orch.risk_pm.run = AsyncMock(return_value={
             "raw": "portfolio decision", "parsed": _mock_portfolio_decision()
         })
@@ -107,6 +109,7 @@ class TestOrchestratorPipeline:
         )
         orch.research_agent.run = AsyncMock()
         orch.trader.run = AsyncMock()
+        orch.trader.run_react = orch.trader.run
         orch.risk_pm.run = AsyncMock()
 
         log = await orch.run_cycle("test context")
@@ -127,6 +130,7 @@ class TestOrchestratorPipeline:
         })
         orch.research_agent.run = AsyncMock(side_effect=AgentAPIError("API error"))
         orch.trader.run = AsyncMock()
+        orch.trader.run_react = orch.trader.run
         orch.risk_pm.run = AsyncMock()
 
         log = await orch.run_cycle("test context")
@@ -145,6 +149,7 @@ class TestOrchestratorPipeline:
             "raw": "research", "parsed": _mock_research_plan()
         })
         orch.trader.run = AsyncMock(side_effect=AgentTimeoutError("timeout"))
+        orch.trader.run_react = orch.trader.run
         orch.risk_pm.run = AsyncMock()
 
         log = await orch.run_cycle("test context")
@@ -165,6 +170,7 @@ class TestOrchestratorPipeline:
         orch.trader.run = AsyncMock(return_value={
             "raw": "trader", "parsed": _mock_trader_proposal()
         })
+        orch.trader.run_react = orch.trader.run
         orch.risk_pm.run = AsyncMock(side_effect=AgentVerificationError("verification failed"))
 
         log = await orch.run_cycle("test context")
@@ -201,6 +207,7 @@ class TestOrchestratorPipeline:
         orch.trader.run = AsyncMock(return_value={
             "raw": "trader", "parsed": _mock_trader_proposal()
         })
+        orch.trader.run_react = orch.trader.run
         orch.risk_pm.run = AsyncMock(return_value={
             "raw": "pm", "parsed": _mock_portfolio_decision()
         })

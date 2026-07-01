@@ -36,6 +36,7 @@ from telegram_bot.bot import build_app, STATE, broadcast_cycle, format_cycle_mes
 load_dotenv()
 
 CYCLE_INTERVAL = int(os.getenv("CYCLE_INTERVAL_SECONDS", "300"))
+FAST_INTERVAL = int(os.getenv("FAST_CYCLE_SECONDS", "60"))  # monitor-only cycle
 LOG_DIR = Path.home() / ".hermes" / "btc-agent-system"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 PENDING_FILE = LOG_DIR / "pending_outcomes.json"
@@ -192,16 +193,56 @@ async def resolve_pending_outcomes(tracker, generator, binance_client):
 
 
 # ─────────────────────────────────────────────
-# Scheduler loop
+# Fast monitor — lightweight observation, no LLM calls
+# ─────────────────────────────────────────────
+async def fast_monitor(binance_client):
+    """Fast cycle: fetch market data, log status, detect anomalies. No LLM calls."""
+    try:
+        price = await binance_client.get_price("BTCUSDT")
+        book = await binance_client.get_orderbook_snapshot(limit=10)
+
+        # Detect anomalies
+        alerts = []
+        imbalance = book["bid_ask_imbalance"]
+        if imbalance > 0.70:
+            alerts.append(f"⚠️ Heavy bid pressure ({imbalance:.3f})")
+        elif imbalance < 0.30:
+            alerts.append(f"⚠️ Heavy ask pressure ({imbalance:.3f})")
+
+        spread = book.get("spread", 0)
+        if spread and spread > 50:  # >$50 spread is wide for BTC
+            alerts.append(f"⚠️ Wide spread: ${spread:,.2f}")
+
+        STATE["last_price"] = price
+        STATE["last_imbalance"] = imbalance
+
+        log_line = (
+            f"📡 Monitor: ${price:,.2f} | "
+            f"Imbalance: {imbalance:.3f} | "
+            f"Spread: ${spread:,.2f}"
+        )
+        if alerts:
+            log_line += " | " + " ".join(alerts)
+        logger.info(log_line)
+
+        return {"price": price, "imbalance": imbalance, "spread": spread, "alerts": alerts}
+    except Exception as e:
+        logger.warning(f"Fast monitor failed: {e}")
+        return None
+
+
+# ─────────────────────────────────────────────
+# Scheduler loop — dual-schedule (fast monitor + slow trade)
 # ─────────────────────────────────────────────
 async def scheduler_loop(orchestrator, app, binance_client):
-    """Run trading cycles on interval."""
+    """Dual-schedule: fast monitor (60s) + slow trade cycle (300s)."""
     global _consecutive_failures
-    logger.info(f"⏰ Scheduler started (interval: {CYCLE_INTERVAL}s)")
+    logger.info(f"⏰ Scheduler started (fast: {FAST_INTERVAL}s, slow: {CYCLE_INTERVAL}s)")
 
     tracker = get_outcome_tracker()
     generator = get_lesson_generator()
     cycle_count = 0
+    last_slow_cycle = 0  # timestamp of last slow cycle
 
     while not shutdown_event.is_set():
         if not STATE["running"]:
@@ -209,123 +250,130 @@ async def scheduler_loop(orchestrator, app, binance_client):
             await asyncio.sleep(10)
             continue
 
-        cycle_count += 1
-        logger.info(f"{'='*60}")
-        logger.info(f"CYCLE #{cycle_count} STARTING")
-        logger.info(f"{'='*60}")
+        now = asyncio.get_event_loop().time()
+        time_since_slow = now - last_slow_cycle
+        run_slow = time_since_slow >= CYCLE_INTERVAL
 
-        try:
-            # Run orchestrator cycle
-            log = await orchestrator.run_cycle()
+        if run_slow:
+            # ── SLOW CYCLE: full orchestrator pipeline ──
+            cycle_count += 1
+            last_slow_cycle = now
+            logger.info(f"{'='*60}")
+            logger.info(f"TRADE CYCLE #{cycle_count} STARTING")
+            logger.info(f"{'='*60}")
 
-            # Record in STATE
-            STATE["last_cycle"] = log
-            STATE["history"].append(log)
-            if len(STATE["history"]) > 20:
-                STATE["history"].pop(0)
-
-            # Broadcast to Telegram
             try:
-                await broadcast_cycle(app, log)
-            except Exception as e:
-                logger.warning(f"Telegram broadcast failed: {e}")
-                # Retry once after 2s
+                # Run orchestrator cycle
+                log = await orchestrator.run_cycle()
+
+                # Record in STATE
+                STATE["last_cycle"] = log
+                STATE["history"].append(log)
+                if len(STATE["history"]) > 20:
+                    STATE["history"].pop(0)
+
+                # Broadcast to Telegram
                 try:
-                    await asyncio.sleep(2)
                     await broadcast_cycle(app, log)
-                    logger.info("Telegram broadcast retry succeeded")
-                except Exception:
-                    logger.error("Telegram broadcast retry also failed — user has no notification")
-
-            # Track outcome for non-SKIP decisions
-            if log.final_decision and log.final_decision.rating.value != "SKIP":
-                try:
-                    entry_price = await binance_client.get_price("BTCUSDT")
-
-                    # Validate price before tracking (skip on bad data)
-                    if not entry_price or entry_price <= 0:
-                        logger.warning(
-                            f"Skipping outcome tracking for {log.cycle_id}: "
-                            f"invalid entry_price={entry_price}"
-                        )
-                    else:
-                        # Persist entry to outcomes.json (so resolve_outcome finds it)
-                        d = log.final_decision
-                        tracker.record_entry(
-                            cycle_id=log.cycle_id,
-                            decision=d.rating.value,
-                            confidence=d.confidence,
-                            entry_price=entry_price,
-                            confluence=getattr(d, "confluence_total", 0) or 0,
-                            setup_match=getattr(d, "setup_match", "none") or "none",
-                            reasoning=getattr(d, "reasoning", "") or "",
-                            position_size_usd=d.position_size_usd,
-                        )
-
-                        # Resolve after CYCLE_INTERVAL seconds
-                        resolve_after = datetime.now(timezone.utc) + timedelta(seconds=CYCLE_INTERVAL)
-
-                        pending_outcomes.append((log.cycle_id, entry_price, resolve_after))
-                        save_pending_outcomes()
-                        logger.info(
-                            f"Tracking outcome: {log.cycle_id} "
-                            f"{log.final_decision.rating.value} "
-                            f"@ ${entry_price:,.2f} "
-                            f"(resolve in {CYCLE_INTERVAL}s)"
-                        )
                 except Exception as e:
-                    logger.warning(f"Outcome tracking failed: {e}")
+                    logger.warning(f"Telegram broadcast failed: {e}")
+                    try:
+                        await asyncio.sleep(2)
+                        await broadcast_cycle(app, log)
+                        logger.info("Telegram broadcast retry succeeded")
+                    except Exception:
+                        logger.error("Telegram broadcast retry also failed")
 
-            # Resolve any pending outcomes
-            resolved = await resolve_pending_outcomes(tracker, generator, binance_client)
-            if resolved:
-                logger.info(f"📊 Resolved {resolved} pending outcomes")
+                # Track outcome for non-SKIP decisions
+                if log.final_decision and log.final_decision.rating.value != "SKIP":
+                    try:
+                        entry_price = await binance_client.get_price("BTCUSDT")
 
-            # Log cycle summary
-            if log.final_decision:
-                d = log.final_decision
+                        if not entry_price or entry_price <= 0:
+                            logger.warning(
+                                f"Skipping outcome tracking for {log.cycle_id}: "
+                                f"invalid entry_price={entry_price}"
+                            )
+                        else:
+                            d = log.final_decision
+                            tracker.record_entry(
+                                cycle_id=log.cycle_id,
+                                decision=d.rating.value,
+                                confidence=d.confidence,
+                                entry_price=entry_price,
+                                confluence=getattr(d, "confluence_total", 0) or 0,
+                                setup_match=getattr(d, "setup_match", "none") or "none",
+                                reasoning=getattr(d, "reasoning", "") or "",
+                                position_size_usd=d.position_size_usd,
+                            )
+
+                            resolve_after = datetime.now(timezone.utc) + timedelta(seconds=CYCLE_INTERVAL)
+                            pending_outcomes.append((log.cycle_id, entry_price, resolve_after))
+                            save_pending_outcomes()
+                            logger.info(
+                                f"Tracking outcome: {log.cycle_id} "
+                                f"{log.final_decision.rating.value} "
+                                f"@ ${entry_price:,.2f} "
+                                f"(resolve in {CYCLE_INTERVAL}s)"
+                            )
+                    except Exception as e:
+                        logger.warning(f"Outcome tracking failed: {e}")
+
+                # Resolve any pending outcomes
+                resolved = await resolve_pending_outcomes(tracker, generator, binance_client)
+                if resolved:
+                    logger.info(f"📊 Resolved {resolved} pending outcomes")
+
+                # Log cycle summary
+                if log.final_decision:
+                    d = log.final_decision
+                    logger.info(
+                        f"Decision: {d.rating.value} | "
+                        f"Confidence: {d.confidence}/10 | "
+                        f"Position: ${d.position_size_usd:.2f} | "
+                        f"Latency: {log.latency_seconds.get('total', 0):.1f}s"
+                    )
+                else:
+                    logger.info(f"Decision: SKIP ({log.error})")
+
+                stats = tracker.get_stats()
                 logger.info(
-                    f"Decision: {d.rating.value} | "
-                    f"Confidence: {d.confidence}/10 | "
-                    f"Position: ${d.position_size_usd:.2f} | "
-                    f"Latency: {log.latency_seconds.get('total', 0):.1f}s"
+                    f"Stats: {stats['total_trades']} trades | "
+                    f"Win rate: {stats['win_rate']:.1%} | "
+                    f"PnL: ${stats['total_pnl']:+,.2f} | "
+                    f"Unresolved: {stats['unresolved']}"
                 )
-            else:
-                logger.info(f"Decision: SKIP ({log.error})")
+                _consecutive_failures = 0  # Reset on success
 
-            stats = tracker.get_stats()
-            logger.info(
-                f"Stats: {stats['total_trades']} trades | "
-                f"Win rate: {stats['win_rate']:.1%} | "
-                f"PnL: ${stats['total_pnl']:+,.2f} | "
-                f"Unresolved: {stats['unresolved']}"
-            )
+            except Exception as e:
+                logger.error(f"Trade cycle {cycle_count} failed: {e}", exc_info=True)
+                _consecutive_failures += 1
+                if _consecutive_failures >= 3:
+                    try:
+                        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                        if chat_id:
+                            await app.bot.send_message(
+                                chat_id=chat_id,
+                                text=f"⚠️ **ALERT**: {_consecutive_failures} consecutive failures!\n"
+                                     f"Last error: `{e}`\nSystem still running but may need attention.",
+                                parse_mode="Markdown",
+                            )
+                    except Exception:
+                        pass
 
-        except Exception as e:
-            logger.error(f"Cycle {cycle_count} failed: {e}", exc_info=True)
-            _consecutive_failures += 1
-            if _consecutive_failures >= 3:
-                try:
-                    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-                    if chat_id:
-                        await app.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"⚠️ **ALERT**: {_consecutive_failures} consecutive cycle failures!\n"
-                                 f"Last error: `{e}`\nSystem still running but may need attention.",
-                            parse_mode="Markdown",
-                        )
-                except Exception:
-                    pass
+            # After slow cycle, wait FAST_INTERVAL before next check
+            wait_time = FAST_INTERVAL
         else:
-            _consecutive_failures = 0  # Reset on success
+            # ── FAST CYCLE: monitor only ──
+            monitor_result = await fast_monitor(binance_client)
+            wait_time = FAST_INTERVAL
 
-        # Wait for next cycle (with early exit on shutdown)
-        logger.info(f"💤 Next cycle in {CYCLE_INTERVAL}s...")
+        # Wait for next tick (with early exit on shutdown)
         try:
-            await asyncio.wait_for(shutdown_event.wait(), timeout=CYCLE_INTERVAL)
+            await asyncio.wait_for(shutdown_event.wait(), timeout=wait_time)
             break  # shutdown_event was set
         except asyncio.TimeoutError:
-            pass  # normal — timeout reached, run next cycle
+            pass  # normal — timeout reached, run next tick
 
     logger.info("⏰ Scheduler stopped")
 
@@ -350,7 +398,7 @@ async def main():
     logger.info("=" * 60)
     logger.info("BTC AGENT SYSTEM — PAPER TRADING MODE")
     logger.info("=" * 60)
-    logger.info(f"Cycle interval: {CYCLE_INTERVAL}s ({CYCLE_INTERVAL//60}min)")
+    logger.info(f"Cycle interval: fast={FAST_INTERVAL}s, slow={CYCLE_INTERVAL}s ({CYCLE_INTERVAL//60}min)")
     logger.info(f"Log dir: {LOG_DIR}")
 
     # Initialize data clients
@@ -398,7 +446,7 @@ async def main():
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     startup_msg = (
         f"🚀 **Paper Trading Started**\n\n"
-        f"⏰ Interval: {CYCLE_INTERVAL}s ({CYCLE_INTERVAL//60}min)\n"
+        f"⏰ Fast monitor: {FAST_INTERVAL}s | Trade cycle: {CYCLE_INTERVAL}s\n"
         f"📊 History: {stats['total_trades']} trades\n"
         f"📈 Win rate: {stats['win_rate']:.1%}\n"
         f"💰 PnL: ${stats['total_pnl']:+,.2f}\n"
