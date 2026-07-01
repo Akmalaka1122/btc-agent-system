@@ -386,10 +386,15 @@ class Agent:
         combined_raw = "\n\n".join(full_conversation)
 
         # Parse final output (last LLM response)
+        # Strip tool_call blocks before parsing to avoid extracting tool JSON
         parsed = None
-        if self.output_schema:
+        if self.output_schema and raw_text:
             try:
-                clean = raw_text.strip()
+                # Remove tool_call blocks from the final response
+                import re as _re
+                clean = _re.sub(r'```tool_call\s*\n.*?\n```', '', raw_text, flags=_re.DOTALL)
+                clean = _re.sub(r'```tool\s*\n.*?\n```', '', clean, flags=_re.DOTALL)
+                clean = clean.strip()
                 if clean.startswith("```"):
                     first_line_end = clean.index("\n") if "\n" in clean else len(clean)
                     clean = clean[first_line_end + 1:] if first_line_end < len(clean) else clean[3:]
