@@ -199,8 +199,13 @@ async def broadcast_cycle(app: Application, log: CycleLog):
     if CHAT_ID:
         try:
             await app.bot.send_message(chat_id=CHAT_ID, text=format_cycle_message(log), parse_mode=ParseMode.MARKDOWN)
-        except Exception as e:
-            logger.error(f"Failed to send Telegram alert: {e}")
+        except Exception as md_err:
+            logger.warning(f"Markdown broadcast failed, sending plain: {md_err}")
+            try:
+                plain = format_cycle_message(log).replace("**", "").replace("*", "").replace("`", "")
+                await app.bot.send_message(chat_id=CHAT_ID, text=plain)
+            except Exception as e:
+                logger.error(f"Plain broadcast also failed: {e}")
 
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -218,7 +223,14 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     try:
         response = await handle_message(message, user_id)
-        await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
+        try:
+            await update.message.reply_text(response, parse_mode=ParseMode.MARKDOWN)
+        except Exception as md_err:
+            # Markdown parse failed — send as plain text
+            logger.warning(f"Markdown parse failed, sending plain: {md_err}")
+            # Strip markdown formatting for plain text fallback
+            plain = response.replace("**", "").replace("*", "").replace("`", "").replace("__", "")
+            await update.message.reply_text(plain)
         logger.info(f"📤 Reply sent to {user_id}")
     except Exception as e:
         logger.error(f"Conversational handler error: {e}")
