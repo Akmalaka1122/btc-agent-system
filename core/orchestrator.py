@@ -137,6 +137,37 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"Binance ticker fetch failed: {e}")
 
+        # --- Polymarket odds ---
+        if self.polymarket:
+            try:
+                token_id = os.getenv("POLYMARKET_TOKEN_ID")
+                if token_id:
+                    odds = await self.polymarket.get_market_odds(token_id)
+                    if odds.get("implied_probability_up") is not None:
+                        sections.append(
+                            f"## Polymarket Odds (BTC 5m market)\n"
+                            f"Implied prob UP: {odds['implied_probability_up']:.1%}\n"
+                            f"Best bid: {odds['best_bid']} | Best ask: {odds['best_ask']}\n"
+                            f"Spread: {odds['spread']}\n"
+                            f"Bid depth (top 5): {odds['bid_depth_5']:.2f} | Ask depth: {odds['ask_depth_5']:.2f}\n"
+                            f"Total bids: {odds['total_bids']} | Total asks: {odds['total_asks']}"
+                        )
+                    else:
+                        sections.append("## Polymarket Odds: No orderbook data available")
+                else:
+                    # Try auto-discover BTC 5m market
+                    markets = await self.polymarket.find_active_markets("Bitcoin", limit=5)
+                    btc_5m = [m for m in markets if "5" in m.get("question", "").lower() and "minute" in m.get("question", "").lower()]
+                    if btc_5m:
+                        sections.append(
+                            f"## Polymarket (auto-discovered)\n"
+                            f"Found {len(btc_5m)} BTC 5m markets — set POLYMARKET_TOKEN_ID for direct access.\n"
+                            f"Example: {btc_5m[0]['question'][:80]}"
+                        )
+            except Exception as e:
+                logger.warning(f"Polymarket odds fetch failed: {e}")
+                sections.append("## Polymarket Odds: UNAVAILABLE (API error)")
+
         # --- Liquidation data ---
         if self.liq_tracker:
             try:

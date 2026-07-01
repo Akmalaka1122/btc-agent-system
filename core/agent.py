@@ -21,6 +21,46 @@ logger = logging.getLogger("agent")
 SOULS_DIR = Path(__file__).parent.parent / "souls"
 
 
+def _extract_json_object(text: str) -> str:
+    """
+    Extract the first complete JSON object from text.
+    Handles trailing text, prose before/after the JSON block.
+    Falls back to brace-matching if prefix/postfix noise exists.
+    """
+    text = text.strip()
+    # Find first '{'
+    start = text.find("{")
+    if start == -1:
+        return text  # no object found, return as-is (will fail validation)
+
+    # Brace-match to find closing '}'
+    depth = 0
+    in_string = False
+    escape_next = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            if in_string:
+                escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    # Braces didn't balance — return from first '{' to end (will fail validation)
+    return text[start:]
+
+
 # ---------------------------------------------------------------------------
 # Provider registry — URLs, default models, and SDK selection
 # ---------------------------------------------------------------------------
@@ -249,6 +289,8 @@ class Agent:
                 if clean.endswith("```"):
                     clean = clean[:-3]
                 clean = clean.strip()
+                # Extract JSON object robustly (handles trailing text/prose)
+                clean = _extract_json_object(clean)
                 parsed = self.output_schema.model_validate_json(clean)
             except Exception as e:
                 logger.warning(f"{self.name} schema validation failed: {e}")

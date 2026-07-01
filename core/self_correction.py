@@ -111,9 +111,21 @@ class OutcomeTracker:
             if outcome["cycle_id"] == cycle_id and not outcome["resolved"]:
                 outcome["exit_price"] = exit_price
                 outcome["exit_time"] = datetime.now(timezone.utc).isoformat()
-                
-                # Calculate actual move
-                entry = outcome["entry_price"]
+
+                # Calculate actual move (guard against zero/None entry)
+                entry = outcome.get("entry_price") or 0.0
+                if entry <= 0:
+                    logger.warning(
+                        f"Cannot resolve {cycle_id}: invalid entry_price={entry}. "
+                        f"Marking as resolved/invalid."
+                    )
+                    outcome["actual_move_pct"] = 0.0
+                    outcome["win"] = None
+                    outcome["pnl_usd"] = 0.0
+                    outcome["resolved"] = True
+                    outcome["invalid"] = True
+                    self._save(data)
+                    return outcome
                 outcome["actual_move_pct"] = ((exit_price - entry) / entry) * 100
                 
                 # Determine win/loss
