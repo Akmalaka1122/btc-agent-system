@@ -35,10 +35,10 @@ class TestPlaybookEnforcement:
             technical_summary="Strong uptrend",
             positioning_summary="Neutral funding",
             fast_filter_flags=[],
-            confluence_technical=2,
-            confluence_positioning=2,
+            confluence_technical=1,
+            confluence_positioning=0,
             confluence_microstructure=1,
-            confluence_total=5,  # Below threshold of 6
+            confluence_total=2,  # Below threshold of 3
             disqualifiers_active=[],
             setup_match="A",
         )

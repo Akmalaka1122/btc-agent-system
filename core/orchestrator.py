@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from core.agent import Agent, AgentTimeoutError, AgentAPIError, AgentVerificationError
 from core.schemas import MarketReport, ResearchPlan, TraderProposal, PortfolioDecision, CycleLog
 from core.tools import create_btc_tools
+from core.indicators import compute_all_indicators
 
 logger = logging.getLogger("orchestrator")
 
@@ -87,6 +88,13 @@ class Orchestrator:
                         f"Price change last 2 candles: "
                         f"{((last['close'] - prev['close']) / prev['close'] * 100):+.3f}%"
                     )
+
+                    # Pre-compute technical indicators (so LLM doesn't have to do math)
+                    try:
+                        indicators_text = compute_all_indicators(candles)
+                        sections.append(indicators_text)
+                    except Exception as e:
+                        logger.warning(f"Indicator computation failed: {e}")
             except Exception as e:
                 logger.warning(f"Binance OHLCV fetch failed: {e}")
                 sections.append("## BTC Price Data: UNAVAILABLE (Binance API error)")
@@ -304,13 +312,13 @@ class Orchestrator:
         # STEP 1.5: Enforce Trading Playbook gates (confluence threshold + disqualifiers)
         market = market_result["parsed"]
         
-        # Gate 1: Confluence threshold (Playbook §7 — confluence <6 = forced SKIP)
-        if market.confluence_total < 6:
-            logger.info(f"Cycle {cycle_id} FORCED SKIP: confluence {market.confluence_total}/10 < threshold 6")
+        # Gate 1: Confluence threshold (Playbook §7 — confluence <3 = forced SKIP)
+        if market.confluence_total < 3:
+            logger.info(f"Cycle {cycle_id} FORCED SKIP: confluence {market.confluence_total}/10 < threshold 3")
             return self._degraded_log(
                 cycle_id, t0, step_status, latency,
-                [f"PLAYBOOK GATE: Confluence {market.confluence_total}/10 below threshold 6 (§7)"],
-                f"FORCED SKIP: Confluence score {market.confluence_total}/10 insufficient (threshold: 6)"
+                [f"PLAYBOOK GATE: Confluence {market.confluence_total}/10 below threshold 3 (§7)"],
+                f"FORCED SKIP: Confluence score {market.confluence_total}/10 insufficient (threshold: 3)"
             )
         
         # Gate 2: Disqualifiers (Playbook §6 — any active disqualifier = forced SKIP)
